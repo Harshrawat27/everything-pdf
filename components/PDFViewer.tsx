@@ -11,6 +11,14 @@ interface PDFDocumentProxy {
 interface PDFPageProxy {
   getViewport: (options: { scale: number }) => any;
   render: (renderContext: any) => { promise: Promise<void> };
+  getTextContent: () => Promise<{
+    items: Array<{
+      str: string;
+      transform: number[];
+      fontName?: string;
+      hasEOL?: boolean;
+    }>;
+  }>;
 }
 
 declare global {
@@ -20,6 +28,12 @@ declare global {
       GlobalWorkerOptions: {
         workerSrc: string;
       };
+      renderTextLayer?: (options: {
+        textContent: any;
+        container: HTMLElement;
+        viewport: any;
+        textDivs: any[];
+      }) => void;
     };
   }
 }
@@ -33,35 +47,133 @@ const PDFViewer: React.FC<PDFViewerProps> = () => {
   const [totalPages, setTotalPages] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [scale, setScale] = useState(1.5);
+  const [scale, setScale] = useState(1.2);
   const [pdfJsLoaded, setPdfJsLoaded] = useState(false);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [isConverting, setIsConverting] = useState(false);
+  const [conversionFormat, setConversionFormat] = useState<'png' | 'jpeg'>(
+    'png'
+  );
+  const [conversionQuality, setConversionQuality] = useState(0.92);
+  const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Add CSS for text layer
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.textContent = `
+      .textLayer {
+        position: absolute;
+        text-align: initial;
+        inset: 0;
+        overflow: hidden;
+        opacity: 0.25;
+        line-height: 1;
+        text-size-adjust: none;
+        forced-color-adjust: none;
+        transform-origin: 0 0;
+        caret-color: CanvasText;
+      }
+      
+      .textLayer span,
+      .textLayer br {
+        color: transparent;
+        position: absolute;
+        white-space: pre;
+        cursor: text;
+        transform-origin: 0% 0%;
+      }
+      
+      .textLayer span.markedContent {
+        top: 0;
+        height: 0;
+      }
+      
+      .textLayer .highlight {
+        margin: -1px;
+        padding: 1px;
+        background-color: rgba(180, 0, 170, 0.2);
+        border-radius: 4px;
+      }
+      
+      .textLayer .highlight.appended {
+        position: initial;
+      }
+      
+      .textLayer .highlight.begin {
+        border-radius: 4px 0 0 4px;
+      }
+      
+      .textLayer .highlight.end {
+        border-radius: 0 4px 4px 0;
+      }
+      
+      .textLayer .highlight.middle {
+        border-radius: 0;
+      }
+      
+      .textLayer .highlight.selected {
+        background-color: rgba(0, 100, 0, 0.2);
+      }
+      
+      .textLayer ::selection {
+        background: rgba(0, 0, 255, 0.3);
+      }
+      
+      .textLayer br::selection {
+        background: transparent;
+      }
+      
+      .textLayer .endOfContent {
+        display: block;
+        position: absolute;
+        inset: 100% 0 0;
+        z-index: -1;
+        cursor: default;
+        user-select: none;
+      }
+      
+      .textLayer .endOfContent.active {
+        top: 0;
+      }
+    `;
+    document.head.appendChild(style);
+
+    return () => {
+      document.head.removeChild(style);
+    };
+  }, []);
 
   // Load PDF.js dynamically
   useEffect(() => {
     const loadPdfJs = async () => {
       try {
-        // Create script element for PDF.js
-        const script = document.createElement('script');
-        script.src =
+        // Load PDF.js and text layer renderer
+        const script1 = document.createElement('script');
+        script1.src =
           'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.3.31/pdf.min.mjs';
-        script.type = 'module';
+        script1.type = 'module';
 
-        script.onload = () => {
-          // Set worker source
-          if (window.pdfjsLib) {
-            window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-              'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.3.31/pdf.worker.min.mjs';
-            setPdfJsLoaded(true);
-          }
+        const script2 = document.createElement('script');
+        script2.src =
+          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.3.31/pdf_viewer.min.mjs';
+        script2.type = 'module';
+
+        script1.onload = () => {
+          script2.onload = () => {
+            if (window.pdfjsLib) {
+              window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+                'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.3.31/pdf.worker.min.mjs';
+              setPdfJsLoaded(true);
+            }
+          };
+          document.head.appendChild(script2);
         };
 
-        script.onerror = () => {
+        script1.onerror = script2.onerror = () => {
           setError('Failed to load PDF library');
         };
 
-        document.head.appendChild(script);
+        document.head.appendChild(script1);
 
         // Alternative method: Load via dynamic import with proper error handling
         try {
@@ -149,23 +261,94 @@ const PDFViewer: React.FC<PDFViewerProps> = () => {
 
   const renderPage = useCallback(
     async (pageNumber: number) => {
-      if (!pdfDoc || !canvasRef.current) return;
+      if (!pdfDoc || !containerRef.current) return;
 
       try {
-        const page = await pdfDoc.getPage(pageNumber);
-        const canvas = canvasRef.current;
-        const context = canvas.getContext('2d');
+        // Clear previous content
+        containerRef.current.innerHTML = '';
 
+        const page = await pdfDoc.getPage(pageNumber);
         const viewport = page.getViewport({ scale });
+
+        // Create canvas for background
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
         canvas.height = viewport.height;
         canvas.width = viewport.width;
+        canvas.style.position = 'absolute';
+        canvas.style.top = '0';
+        canvas.style.left = '0';
 
+        // Create text layer div
+        const textLayerDiv = document.createElement('div');
+        textLayerDiv.className = 'textLayer';
+        textLayerDiv.style.position = 'absolute';
+        textLayerDiv.style.top = '0';
+        textLayerDiv.style.left = '0';
+        textLayerDiv.style.width = `${viewport.width}px`;
+        textLayerDiv.style.height = `${viewport.height}px`;
+        textLayerDiv.style.fontSize = '1px';
+        textLayerDiv.style.lineHeight = '1';
+        textLayerDiv.style.transformOrigin = '0% 0%';
+
+        // Create page container
+        const pageContainer = document.createElement('div');
+        pageContainer.style.position = 'relative';
+        pageContainer.style.width = `${viewport.width}px`;
+        pageContainer.style.height = `${viewport.height}px`;
+        pageContainer.style.margin = '0 auto';
+        pageContainer.style.boxShadow = '0 4px 8px rgba(0,0,0,0.1)';
+        pageContainer.style.backgroundColor = 'white';
+
+        pageContainer.appendChild(canvas);
+        pageContainer.appendChild(textLayerDiv);
+        containerRef.current.appendChild(pageContainer);
+
+        // Render the canvas
         const renderContext = {
           canvasContext: context,
           viewport: viewport,
         };
-
         await page.render(renderContext).promise;
+
+        // Render the text layer
+        const textContent = await page.getTextContent();
+
+        // Create text layer using PDF.js built-in text layer
+        if (window.pdfjsLib && (window.pdfjsLib as any).renderTextLayer) {
+          (window.pdfjsLib as any).renderTextLayer({
+            textContent: textContent,
+            container: textLayerDiv,
+            viewport: viewport,
+            textDivs: [],
+          });
+        } else {
+          // Fallback: manual text layer creation
+          textContent.items.forEach((item: any) => {
+            const textDiv = document.createElement('div');
+            textDiv.textContent = item.str;
+            textDiv.style.position = 'absolute';
+            textDiv.style.whiteSpace = 'pre';
+            textDiv.style.color = 'transparent';
+            textDiv.style.userSelect = 'text';
+            textDiv.style.cursor = 'text';
+
+            // Transform matrix for positioning
+            const transform = item.transform;
+            const x = transform[4];
+            const y = transform[5];
+            const fontSize = Math.sqrt(
+              transform[0] * transform[0] + transform[1] * transform[1]
+            );
+
+            textDiv.style.left = `${x}px`;
+            textDiv.style.bottom = `${y}px`;
+            textDiv.style.fontSize = `${fontSize}px`;
+            textDiv.style.fontFamily = item.fontName || 'sans-serif';
+
+            textLayerDiv.appendChild(textDiv);
+          });
+        }
       } catch (err) {
         console.error('Error rendering page:', err);
         setError('Failed to render PDF page');
@@ -210,12 +393,119 @@ const PDFViewer: React.FC<PDFViewerProps> = () => {
   };
 
   const zoomIn = () => {
-    setScale((prev) => Math.min(prev + 0.25, 3));
+    setScale((prev) => Math.min(prev + 0.2, 3));
   };
 
   const zoomOut = () => {
-    setScale((prev) => Math.max(prev - 0.25, 0.5));
+    setScale((prev) => Math.max(prev - 0.2, 0.5));
   };
+
+  // Convert single page to image
+  const convertPageToImage = useCallback(
+    async (pageNumber: number, downloadScale: number = 2) => {
+      if (!pdfDoc) return;
+
+      try {
+        setIsConverting(true);
+        const page = await pdfDoc.getPage(pageNumber);
+
+        // Create a higher resolution canvas for conversion
+        const viewport = page.getViewport({ scale: downloadScale });
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+
+        const renderContext = {
+          canvasContext: context,
+          viewport: viewport,
+        };
+
+        await page.render(renderContext).promise;
+
+        // Convert canvas to blob
+        return new Promise<string>((resolve) => {
+          canvas.toBlob(
+            (blob) => {
+              if (blob) {
+                const url = URL.createObjectURL(blob);
+                resolve(url);
+              }
+            },
+            `image/${conversionFormat}`,
+            conversionFormat === 'jpeg' ? conversionQuality : undefined
+          );
+        });
+      } catch (error) {
+        console.error('Error converting page to image:', error);
+        setError('Failed to convert page to image');
+        return null;
+      } finally {
+        setIsConverting(false);
+      }
+    },
+    [pdfDoc, conversionFormat, conversionQuality]
+  );
+
+  // Download single page as image
+  const downloadCurrentPageAsImage = useCallback(async () => {
+    const imageUrl = await convertPageToImage(currentPage);
+    if (imageUrl) {
+      const link = document.createElement('a');
+      link.href = imageUrl;
+      link.download = `${
+        pdfFile?.name?.replace('.pdf', '') || 'page'
+      }_page_${currentPage}.${conversionFormat}`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(imageUrl);
+    }
+  }, [convertPageToImage, currentPage, pdfFile?.name, conversionFormat]);
+
+  // Convert all pages to images and download as ZIP
+  const downloadAllPagesAsImages = useCallback(async () => {
+    if (!pdfDoc || !totalPages) return;
+
+    try {
+      setIsConverting(true);
+
+      // We'll create a simple approach - download each page separately
+      // For a ZIP file, you'd need to add a ZIP library like JSZip
+      for (let i = 1; i <= totalPages; i++) {
+        const imageUrl = await convertPageToImage(i);
+        if (imageUrl) {
+          const link = document.createElement('a');
+          link.href = imageUrl;
+          link.download = `${
+            pdfFile?.name?.replace('.pdf', '') || 'document'
+          }_page_${i.toString().padStart(3, '0')}.${conversionFormat}`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(imageUrl);
+
+          // Add a small delay between downloads to avoid overwhelming the browser
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
+    } catch (error) {
+      console.error('Error converting all pages:', error);
+      setError('Failed to convert all pages to images');
+    } finally {
+      setIsConverting(false);
+    }
+  }, [pdfDoc, totalPages, convertPageToImage, pdfFile?.name, conversionFormat]);
+
+  // Convert and preview current page
+  const previewCurrentPageAsImage = useCallback(async () => {
+    const imageUrl = await convertPageToImage(currentPage);
+    if (imageUrl) {
+      // Open in new tab for preview
+      window.open(imageUrl, '_blank');
+    }
+  }, [convertPageToImage, currentPage]);
 
   return (
     <div className='flex h-screen bg-gray-100'>
@@ -315,6 +605,81 @@ const PDFViewer: React.FC<PDFViewerProps> = () => {
                 Zoom In
               </button>
             </div>
+
+            {/* Image Conversion Section */}
+            <div className='border-t pt-4 space-y-4'>
+              <h3 className='font-semibold text-gray-800'>Convert to Image</h3>
+
+              {/* Format Selection */}
+              <div className='space-y-2'>
+                <label className='text-sm text-gray-600'>Format:</label>
+                <select
+                  value={conversionFormat}
+                  onChange={(e) =>
+                    setConversionFormat(e.target.value as 'png' | 'jpeg')
+                  }
+                  className='w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500'
+                >
+                  <option value='png'>PNG (Lossless)</option>
+                  <option value='jpeg'>JPEG (Smaller size)</option>
+                </select>
+              </div>
+
+              {/* Quality Selection for JPEG */}
+              {conversionFormat === 'jpeg' && (
+                <div className='space-y-2'>
+                  <label className='text-sm text-gray-600'>
+                    Quality: {Math.round(conversionQuality * 100)}%
+                  </label>
+                  <input
+                    type='range'
+                    min='0.1'
+                    max='1'
+                    step='0.1'
+                    value={conversionQuality}
+                    onChange={(e) =>
+                      setConversionQuality(parseFloat(e.target.value))
+                    }
+                    className='w-full'
+                  />
+                </div>
+              )}
+
+              {/* Conversion Buttons */}
+              <div className='space-y-2'>
+                <button
+                  onClick={previewCurrentPageAsImage}
+                  disabled={isConverting}
+                  className='w-full px-3 py-2 bg-green-500 text-white rounded disabled:bg-gray-300 hover:bg-green-600 transition-colors'
+                >
+                  {isConverting ? 'Converting...' : 'Preview Current Page'}
+                </button>
+
+                <button
+                  onClick={downloadCurrentPageAsImage}
+                  disabled={isConverting}
+                  className='w-full px-3 py-2 bg-blue-500 text-white rounded disabled:bg-gray-300 hover:bg-blue-600 transition-colors'
+                >
+                  {isConverting ? 'Converting...' : 'Download Current Page'}
+                </button>
+
+                <button
+                  onClick={downloadAllPagesAsImages}
+                  disabled={isConverting}
+                  className='w-full px-3 py-2 bg-purple-500 text-white rounded disabled:bg-gray-300 hover:bg-purple-600 transition-colors'
+                >
+                  {isConverting
+                    ? 'Converting...'
+                    : `Download All ${totalPages} Pages`}
+                </button>
+              </div>
+
+              <div className='text-xs text-gray-500 space-y-1'>
+                <p>• Preview opens image in new tab</p>
+                <p>• Downloads use 2x resolution for quality</p>
+                <p>• All pages downloads each page separately</p>
+              </div>
+            </div>
           </div>
         )}
 
@@ -361,12 +726,11 @@ const PDFViewer: React.FC<PDFViewerProps> = () => {
           )}
 
           {pdfDoc && (
-            <div className='flex justify-center'>
-              <canvas
-                ref={canvasRef}
-                className='border border-gray-300 shadow-lg bg-white max-w-full h-auto'
-              />
-            </div>
+            <div
+              ref={containerRef}
+              className='flex justify-center'
+              style={{ userSelect: 'text' }}
+            />
           )}
         </div>
       </div>

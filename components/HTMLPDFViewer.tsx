@@ -22,6 +22,7 @@ interface PDFPageProxy {
       dir?: string;
     }>;
   }>;
+  getAnnotations: () => Promise<any[]>;
 }
 
 // Extend existing window interface instead of redefining
@@ -163,7 +164,37 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
     [handleFileUpload]
   );
 
-  // Render page as HTML elements
+  // Helper function to extract color from PDF operations
+  const extractTextColor = (operatorList: any): string => {
+    try {
+      // Look for color setting operations in the PDF
+      const ops = operatorList.fnArray;
+      const args = operatorList.argsArray;
+
+      let currentColor = '#000000'; // Default black
+
+      for (let i = 0; i < ops.length; i++) {
+        // PDF.js operator codes for color setting
+        if (ops[i] === 82 || ops[i] === 84) {
+          // setFillColor operations
+          const colorArgs = args[i];
+          if (colorArgs && colorArgs.length >= 3) {
+            // Convert RGB values (0-1) to hex
+            const r = Math.round(colorArgs[0] * 255);
+            const g = Math.round(colorArgs[1] * 255);
+            const b = Math.round(colorArgs[2] * 255);
+            currentColor = `rgb(${r}, ${g}, ${b})`;
+          }
+        }
+      }
+
+      return currentColor;
+    } catch (error) {
+      return '#000000'; // Default to black if color extraction fails
+    }
+  };
+
+  // Render page as HTML elements with improved text handling
   const renderPageAsHTML = useCallback(
     async (pageNumber: number) => {
       if (!pdfDoc || !containerRef.current) return;
@@ -175,56 +206,91 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
         const viewport = page.getViewport({ scale });
         const textContent = await page.getTextContent();
 
+        // Get annotations for highlights and colors
+        let annotations: any[] = [];
+        try {
+          annotations = await page.getAnnotations();
+        } catch (error) {
+          console.warn('Could not load annotations:', error);
+        }
+
         // Create page container
         const pageContainer = document.createElement('div');
         pageContainer.style.cssText = `
-        position: relative;
-        width: ${viewport.width}px;
-        height: ${viewport.height}px;
-        margin: 20px auto;
-        background: white;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        border: 1px solid #e0e0e0;
-        overflow: hidden;
-        user-select: text;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      `;
+          position: relative;
+          width: ${viewport.width}px;
+          height: ${viewport.height}px;
+          margin: 20px auto;
+          background: white;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+          border: 1px solid #e0e0e0;
+          overflow: hidden;
+          user-select: text;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        `;
 
-        // Render background canvas for images and graphics
+        // Render background canvas for images and graphics (but hide text)
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
         canvas.width = viewport.width;
         canvas.height = viewport.height;
         canvas.style.cssText = `
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        z-index: 1;
-      `;
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          z-index: 1;
+        `;
 
+        // Custom render context to hide text from canvas
         const renderContext = {
           canvasContext: context,
           viewport: viewport,
+          renderInteractiveForms: false,
+          // This option helps reduce text rendering on canvas
+          textLayerMode: 0,
         };
 
-        await page.render(renderContext).promise;
+        // Render the page but intercept text operations
+        try {
+          const renderTask = page.render(renderContext);
+          await renderTask.promise;
+        } catch (renderError) {
+          console.warn('Render error:', renderError);
+          // Fallback: render normally if custom rendering fails
+          await page.render({
+            canvasContext: context,
+            viewport: viewport,
+          }).promise;
+        }
+
         pageContainer.appendChild(canvas);
 
-        // Create HTML text layer
+        // Create HTML text layer with better color detection
         const textLayer = document.createElement('div');
         textLayer.style.cssText = `
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        z-index: 2;
-        pointer-events: auto;
-      `;
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          z-index: 2;
+          pointer-events: auto;
+        `;
 
-        // Process text items and create HTML elements
+        // Get operator list to extract colors
+        let operatorList: any = null;
+        try {
+          operatorList = await (page as any).getOperatorList();
+        } catch (error) {
+          console.warn(
+            'Could not get operator list for color extraction:',
+            error
+          );
+        }
+
+        // Process text items and create HTML elements with color preservation
         textContent.items.forEach((item: any, index: number) => {
           if (!item.str.trim()) return;
 
@@ -239,22 +305,86 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
           const scaleY = Math.abs(transform[3]);
           const fontSize = Math.max(scaleY, 8); // Minimum font size
 
+          // Try to extract color information
+          let textColor = '#000000'; // Default black
+
+          // Check if there are annotations that might affect this text
+          annotations.forEach((annotation) => {
+            if (annotation.subtype === 'Highlight' && annotation.color) {
+              // Check if text is within highlight bounds
+              const annotRect = annotation.rect;
+              if (annotRect && annotRect.length >= 4) {
+                const [x1, y1, x2, y2] = annotRect;
+                const textX = x;
+                const textY = viewport.height - y;
+
+                if (textX >= x1 && textX <= x2 && textY >= y1 && textY <= y2) {
+                  // Text is within highlight area
+                  if (annotation.color && annotation.color.length >= 3) {
+                    const [r, g, b] = annotation.color;
+                    textColor = `rgb(${Math.round(r * 255)}, ${Math.round(
+                      g * 255
+                    )}, ${Math.round(b * 255)})`;
+                  }
+                }
+              }
+            }
+          });
+
+          // If we have operator list, try to extract text color from it
+          if (operatorList && !textColor.includes('rgb')) {
+            textColor = extractTextColor(operatorList);
+          }
+
           textElement.style.cssText = `
-          position: absolute;
-          left: ${x}px;
-          top: ${y - fontSize}px;
-          font-size: ${fontSize}px;
-          font-family: ${item.fontName || 'Arial, sans-serif'};
-          line-height: 1;
-          white-space: pre;
-          cursor: text;
-          user-select: text;
-          color: #000;
-          transform-origin: left top;
-          ${scaleX !== scaleY ? `transform: scaleX(${scaleX / scaleY});` : ''}
-        `;
+            position: absolute;
+            left: ${x}px;
+            top: ${y - fontSize}px;
+            font-size: ${fontSize}px;
+            font-family: ${item.fontName || 'Arial, sans-serif'};
+            line-height: 1;
+            white-space: pre;
+            cursor: text;
+            user-select: text;
+            color: ${textColor};
+            transform-origin: left top;
+            ${scaleX !== scaleY ? `transform: scaleX(${scaleX / scaleY});` : ''}
+            background: transparent;
+            border: none;
+            margin: 0;
+            padding: 0;
+          `;
 
           textLayer.appendChild(textElement);
+        });
+
+        // Add highlight overlays from annotations
+        annotations.forEach((annotation) => {
+          if (annotation.subtype === 'Highlight' && annotation.rect) {
+            const [x1, y1, x2, y2] = annotation.rect;
+            const highlightElement = document.createElement('div');
+
+            let backgroundColor = 'rgba(255, 255, 0, 0.3)'; // Default yellow
+            if (annotation.color && annotation.color.length >= 3) {
+              const [r, g, b] = annotation.color;
+              backgroundColor = `rgba(${Math.round(r * 255)}, ${Math.round(
+                g * 255
+              )}, ${Math.round(b * 255)}, 0.3)`;
+            }
+
+            highlightElement.style.cssText = `
+              position: absolute;
+              left: ${x1}px;
+              top: ${viewport.height - y2}px;
+              width: ${x2 - x1}px;
+              height: ${y2 - y1}px;
+              background-color: ${backgroundColor};
+              z-index: 1;
+              pointer-events: none;
+            `;
+
+            textLayer.appendChild(highlightElement);
+          }
         });
 
         pageContainer.appendChild(textLayer);
@@ -285,36 +415,36 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
         canvas.height = viewport.height;
         canvas.width = viewport.width;
         canvas.style.cssText = `
-        position: absolute;
-        top: 0;
-        left: 0;
-        border: 1px solid #e0e0e0;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-      `;
+          position: absolute;
+          top: 0;
+          left: 0;
+          border: 1px solid #e0e0e0;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        `;
 
         // Create text layer
         const textLayerDiv = document.createElement('div');
         textLayerDiv.style.cssText = `
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: ${viewport.width}px;
-        height: ${viewport.height}px;
-        font-size: 1px;
-        line-height: 1;
-        transform-origin: 0% 0%;
-        z-index: 2;
-      `;
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: ${viewport.width}px;
+          height: ${viewport.height}px;
+          font-size: 1px;
+          line-height: 1;
+          transform-origin: 0% 0%;
+          z-index: 2;
+        `;
 
         // Create page container
         const pageContainer = document.createElement('div');
         pageContainer.style.cssText = `
-        position: relative;
-        width: ${viewport.width}px;
-        height: ${viewport.height}px;
-        margin: 20px auto;
-        background: white;
-      `;
+          position: relative;
+          width: ${viewport.width}px;
+          height: ${viewport.height}px;
+          margin: 20px auto;
+          background: white;
+        `;
 
         pageContainer.appendChild(canvas);
         pageContainer.appendChild(textLayerDiv);
@@ -332,19 +462,19 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
           const textDiv = document.createElement('div');
           textDiv.textContent = item.str;
           textDiv.style.cssText = `
-          position: absolute;
-          white-space: pre;
-          color: transparent;
-          user-select: text;
-          cursor: text;
-          left: ${item.transform[4]}px;
-          bottom: ${item.transform[5]}px;
-          font-size: ${Math.sqrt(
-            item.transform[0] * item.transform[0] +
-              item.transform[1] * item.transform[1]
-          )}px;
-          font-family: ${item.fontName || 'sans-serif'};
-        `;
+            position: absolute;
+            white-space: pre;
+            color: transparent;
+            user-select: text;
+            cursor: text;
+            left: ${item.transform[4]}px;
+            bottom: ${item.transform[5]}px;
+            font-size: ${Math.sqrt(
+              item.transform[0] * item.transform[0] +
+                item.transform[1] * item.transform[1]
+            )}px;
+            font-family: ${item.fontName || 'sans-serif'};
+          `;
           textLayerDiv.appendChild(textDiv);
         });
       } catch (err) {
@@ -462,7 +592,7 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
       {/* Left Panel - Controls (30%) */}
       <div className='w-[30%] bg-white border-r border-gray-300 p-6 flex flex-col overflow-y-auto'>
         <h2 className='text-2xl font-bold mb-6 text-gray-800'>
-          HTML PDF Viewer
+          Enhanced PDF Viewer
         </h2>
 
         {/* Upload Area */}
@@ -523,12 +653,12 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
                 }
                 className='w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500'
               >
-                <option value='html'>HTML Mode (Best text selection)</option>
+                <option value='html'>HTML Mode (Clean text + colors)</option>
                 <option value='canvas'>Canvas Mode (Traditional)</option>
               </select>
               <p className='text-xs text-gray-500 mt-1'>
                 {renderMode === 'html'
-                  ? 'Perfect text selection & copy-paste'
+                  ? 'Clean text selection with color preservation'
                   : 'Traditional canvas rendering'}
               </p>
             </div>

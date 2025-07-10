@@ -155,197 +155,276 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
   // Render a single page as clean HTML
   const renderSinglePageAsHTML = useCallback(
     async (pageNumber: number): Promise<HTMLElement> => {
-      if (!pdfDoc) throw new Error('No PDF document loaded');
+      if (!pdfDoc) {
+        throw new Error('No PDF document loaded');
+      }
 
-      const page = await pdfDoc.getPage(pageNumber);
-      const viewport = page.getViewport({ scale });
-      const textContent = await page.getTextContent();
+      console.log(`Starting to render page ${pageNumber}`);
 
-      // Create page container
-      const pageContainer = document.createElement('div');
-      pageContainer.className = 'pdf-page';
-      pageContainer.style.cssText = `
-        position: relative;
-        width: ${viewport.width}px;
-        height: ${viewport.height}px;
-        margin: 0 auto 40px auto;
-        background: white;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        border: 1px solid #e0e0e0;
-        overflow: hidden;
-        user-select: text;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        page-break-after: always;
-      `;
+      try {
+        const page = await pdfDoc.getPage(pageNumber);
+        console.log(`Got page ${pageNumber}, getting viewport...`);
 
-      // Add page number indicator
-      const pageLabel = document.createElement('div');
-      pageLabel.textContent = `Page ${pageNumber}`;
-      pageLabel.style.cssText = `
-        position: absolute;
-        top: -30px;
-        left: 0;
-        font-size: 12px;
-        color: #666;
-        background: #f5f5f5;
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-weight: 500;
-      `;
-      pageContainer.appendChild(pageLabel);
+        const viewport = page.getViewport({ scale });
+        console.log(
+          `Got viewport for page ${pageNumber}:`,
+          viewport.width,
+          'x',
+          viewport.height
+        );
 
-      // Create text layer
-      const textLayer = document.createElement('div');
-      textLayer.style.cssText = `
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        z-index: 2;
-        pointer-events: auto;
-      `;
+        const textContent = await page.getTextContent();
+        console.log(
+          `Got text content for page ${pageNumber}, items:`,
+          textContent.items.length
+        );
 
-      // Process text items and create HTML elements
-      textContent.items.forEach((item: any, index: number) => {
-        if (!item.str.trim()) return;
-
-        const textElement = document.createElement('div');
-        textElement.textContent = item.str;
-        textElement.className = 'pdf-text-element';
-        textElement.dataset.pageNumber = pageNumber.toString();
-        textElement.dataset.textIndex = index.toString();
-
-        // Calculate position and size from transform matrix
-        const transform = item.transform;
-        const x = transform[4];
-        const y = viewport.height - transform[5]; // PDF coordinates are bottom-up
-        const scaleX = Math.abs(transform[0]);
-        const scaleY = Math.abs(transform[3]);
-        const fontSize = Math.max(scaleY, 8); // Minimum font size
-
-        textElement.style.cssText = `
-          position: absolute;
-          left: ${x}px;
-          top: ${y - fontSize}px;
-          font-size: ${fontSize}px;
-          font-family: ${item.fontName || 'Arial, sans-serif'};
-          line-height: 1;
-          white-space: pre;
-          cursor: text;
+        // Create page container
+        const pageContainer = document.createElement('div');
+        pageContainer.className = 'pdf-page';
+        pageContainer.style.cssText = `
+          position: relative;
+          width: ${viewport.width}px;
+          height: ${viewport.height}px;
+          margin: 0 auto 40px auto;
+          background: white;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+          border: 1px solid #e0e0e0;
+          overflow: hidden;
           user-select: text;
-          color: #000;
-          transform-origin: left top;
-          ${scaleX !== scaleY ? `transform: scaleX(${scaleX / scaleY});` : ''}
-          background: transparent;
-          border: none;
-          margin: 0;
-          padding: 2px;
-          border-radius: 2px;
-          transition: background-color 0.2s ease;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          page-break-after: always;
         `;
 
-        // Add hover effects
-        textElement.addEventListener('mouseenter', () => {
-          textElement.style.backgroundColor = 'rgba(59, 130, 246, 0.1)';
-          textElement.style.outline = '1px solid rgba(59, 130, 246, 0.3)';
-        });
+        // Add page number indicator
+        const pageLabel = document.createElement('div');
+        pageLabel.textContent = `Page ${pageNumber}`;
+        pageLabel.style.cssText = `
+          position: absolute;
+          top: -30px;
+          left: 0;
+          font-size: 12px;
+          color: #666;
+          background: #f5f5f5;
+          padding: 4px 8px;
+          border-radius: 4px;
+          font-weight: 500;
+        `;
+        pageContainer.appendChild(pageLabel);
 
-        textElement.addEventListener('mouseleave', () => {
-          if (!textElement.classList.contains('selected')) {
-            textElement.style.backgroundColor = 'transparent';
-            textElement.style.outline = 'none';
-          }
-        });
+        // Create text layer
+        const textLayer = document.createElement('div');
+        textLayer.style.cssText = `
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          z-index: 2;
+          pointer-events: auto;
+        `;
 
-        // Add click selection
-        textElement.addEventListener('click', (e) => {
-          e.preventDefault();
+        let processedItems = 0;
 
-          // Remove selection from other elements
-          const allTextElements =
-            pageContainer.querySelectorAll('.pdf-text-element');
-          allTextElements.forEach((el) => {
-            el.classList.remove('selected');
-            if (el !== textElement) {
-              (el as HTMLElement).style.backgroundColor = 'transparent';
-              (el as HTMLElement).style.outline = 'none';
+        // Process text items and create HTML elements
+        textContent.items.forEach((item: any, index: number) => {
+          if (!item.str || !item.str.trim()) return;
+
+          const textElement = document.createElement('div');
+          textElement.textContent = item.str;
+          textElement.className = 'pdf-text-element';
+          textElement.dataset.pageNumber = pageNumber.toString();
+          textElement.dataset.textIndex = index.toString();
+
+          // Calculate position and size from transform matrix
+          const transform = item.transform;
+          const x = transform[4];
+          const y = viewport.height - transform[5]; // PDF coordinates are bottom-up
+          const scaleX = Math.abs(transform[0]);
+          const scaleY = Math.abs(transform[3]);
+          const fontSize = Math.max(scaleY, 8); // Minimum font size
+
+          textElement.style.cssText = `
+            position: absolute;
+            left: ${x}px;
+            top: ${y - fontSize}px;
+            font-size: ${fontSize}px;
+            font-family: ${item.fontName || 'Arial, sans-serif'};
+            line-height: 1;
+            white-space: pre;
+            cursor: text;
+            user-select: text;
+            color: #000;
+            transform-origin: left top;
+            ${scaleX !== scaleY ? `transform: scaleX(${scaleX / scaleY});` : ''}
+            background: transparent;
+            border: none;
+            margin: 0;
+            padding: 2px;
+            border-radius: 2px;
+            transition: background-color 0.2s ease;
+          `;
+
+          // Add hover effects
+          textElement.addEventListener('mouseenter', () => {
+            textElement.style.backgroundColor = 'rgba(59, 130, 246, 0.1)';
+            textElement.style.outline = '1px solid rgba(59, 130, 246, 0.3)';
+          });
+
+          textElement.addEventListener('mouseleave', () => {
+            if (!textElement.classList.contains('selected')) {
+              textElement.style.backgroundColor = 'transparent';
+              textElement.style.outline = 'none';
             }
           });
 
-          // Select current element
-          textElement.classList.add('selected');
-          textElement.style.backgroundColor = 'rgba(59, 130, 246, 0.2)';
-          textElement.style.outline = '2px solid rgba(59, 130, 246, 0.5)';
+          // Add click selection
+          textElement.addEventListener('click', (e) => {
+            e.preventDefault();
 
-          // Select the text
-          const selection = window.getSelection();
-          const range = document.createRange();
-          range.selectNodeContents(textElement);
-          selection?.removeAllRanges();
-          selection?.addRange(range);
+            // Remove selection from other elements
+            const allTextElements =
+              pageContainer.querySelectorAll('.pdf-text-element');
+            allTextElements.forEach((el) => {
+              el.classList.remove('selected');
+              if (el !== textElement) {
+                (el as HTMLElement).style.backgroundColor = 'transparent';
+                (el as HTMLElement).style.outline = 'none';
+              }
+            });
+
+            // Select current element
+            textElement.classList.add('selected');
+            textElement.style.backgroundColor = 'rgba(59, 130, 246, 0.2)';
+            textElement.style.outline = '2px solid rgba(59, 130, 246, 0.5)';
+
+            // Select the text
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(textElement);
+            selection?.removeAllRanges();
+            selection?.addRange(range);
+          });
+
+          textLayer.appendChild(textElement);
+          processedItems++;
         });
 
-        textLayer.appendChild(textElement);
-      });
+        pageContainer.appendChild(textLayer);
 
-      pageContainer.appendChild(textLayer);
-      return pageContainer;
+        console.log(
+          `Page ${pageNumber} rendered successfully with ${processedItems} text elements`
+        );
+        return pageContainer;
+      } catch (error) {
+        console.error(
+          `Error in renderSinglePageAsHTML for page ${pageNumber}:`,
+          error
+        );
+        throw error;
+      }
     },
     [pdfDoc, scale]
   );
 
   // Render all pages in scrollable format
   const renderAllPages = useCallback(async () => {
-    if (!pdfDoc || !containerRef.current) return;
+    if (!pdfDoc || !containerRef.current) {
+      console.log('Missing pdfDoc or containerRef');
+      return;
+    }
+
+    console.log('Starting to render', totalPages, 'pages');
 
     try {
       containerRef.current.innerHTML = '';
       setAllPagesRendered(false);
 
-      // Create a loading indicator
-      const loadingDiv = document.createElement('div');
-      loadingDiv.innerHTML = `
-        <div style="text-align: center; padding: 40px; color: #666;">
-          <div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-          <p style="margin-top: 16px;">Rendering pages...</p>
-        </div>
-      `;
-
-      // Add CSS for loading animation
-      const style = document.createElement('style');
-      style.textContent = `
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-      `;
+      // Add CSS for loading animation if not already present
       if (!document.head.querySelector('style[data-pdf-viewer]')) {
+        const style = document.createElement('style');
         style.setAttribute('data-pdf-viewer', 'true');
+        style.textContent = `
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+        `;
         document.head.appendChild(style);
       }
 
+      // Create container for all pages
+      const pagesContainer = document.createElement('div');
+      pagesContainer.style.cssText = `
+        width: 100%;
+        min-height: 100%;
+      `;
+
+      // Create loading indicator
+      const loadingDiv = document.createElement('div');
+      loadingDiv.id = 'pdf-loading';
+      loadingDiv.innerHTML = `
+        <div style="text-align: center; padding: 40px; color: #666;">
+          <div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+          <p style="margin-top: 16px;">Starting to render pages...</p>
+        </div>
+      `;
+
       containerRef.current.appendChild(loadingDiv);
 
-      // Render pages progressively
-      const fragment = document.createDocumentFragment();
-
+      // Render pages one by one and append immediately
       for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-        try {
-          const pageElement = await renderSinglePageAsHTML(pageNum);
-          fragment.appendChild(pageElement);
+        console.log(`Rendering page ${pageNum}`);
 
-          // Update loading progress
-          loadingDiv.innerHTML = `
+        // Update loading message
+        const loadingIndicator = document.getElementById('pdf-loading');
+        if (loadingIndicator) {
+          loadingIndicator.innerHTML = `
             <div style="text-align: center; padding: 40px; color: #666;">
               <div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite;"></div>
               <p style="margin-top: 16px;">Rendering page ${pageNum} of ${totalPages}...</p>
             </div>
           `;
-        } catch (error) {
+        }
+
+        try {
+          const pageElement = await renderSinglePageAsHTML(pageNum);
+          pagesContainer.appendChild(pageElement);
+          console.log(`Page ${pageNum} rendered successfully`);
+
+          // If this is the first page, replace loading with pages container
+          if (pageNum === 1) {
+            containerRef.current.innerHTML = '';
+            containerRef.current.appendChild(pagesContainer);
+
+            // Add a small loading indicator at the bottom for remaining pages
+            const bottomLoading = document.createElement('div');
+            bottomLoading.id = 'bottom-loading';
+            bottomLoading.innerHTML = `
+              <div style="text-align: center; padding: 20px; color: #666; font-size: 14px;">
+                Loading remaining pages... (${pageNum}/${totalPages})
+              </div>
+            `;
+            pagesContainer.appendChild(bottomLoading);
+          } else {
+            // Update bottom loading indicator
+            const bottomLoading = document.getElementById('bottom-loading');
+            if (bottomLoading) {
+              if (pageNum === totalPages) {
+                bottomLoading.remove();
+              } else {
+                bottomLoading.innerHTML = `
+                  <div style="text-align: center; padding: 20px; color: #666; font-size: 14px;">
+                    Loading remaining pages... (${pageNum}/${totalPages})
+                  </div>
+                `;
+              }
+            }
+          }
+        } catch (error: any) {
           console.error(`Error rendering page ${pageNum}:`, error);
 
-          // Create error placeholder for failed page
+          // Create error placeholder
           const errorPage = document.createElement('div');
           errorPage.style.cssText = `
             width: 800px;
@@ -358,19 +437,39 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
             justify-content: center;
             color: #c33;
             font-family: Arial, sans-serif;
+            border-radius: 8px;
           `;
-          errorPage.textContent = `Error rendering page ${pageNum}`;
-          fragment.appendChild(errorPage);
+          errorPage.innerHTML = `
+            <div style="text-align: center;">
+              <p>Error rendering page ${pageNum}</p>
+              <p style="font-size: 12px; margin-top: 8px;">${
+                error.message || 'Unknown error'
+              }</p>
+            </div>
+          `;
+          pagesContainer.appendChild(errorPage);
         }
+
+        // Add a small delay to prevent browser freezing
+        await new Promise((resolve) => setTimeout(resolve, 10));
       }
 
-      // Replace loading with rendered pages
-      containerRef.current.innerHTML = '';
-      containerRef.current.appendChild(fragment);
+      console.log('All pages rendered successfully');
       setAllPagesRendered(true);
-    } catch (err) {
-      console.error('Error rendering pages:', err);
-      setError('Failed to render PDF pages');
+    } catch (err: any) {
+      console.error('Error in renderAllPages:', err);
+      setError(`Failed to render PDF pages: ${err.message || 'Unknown error'}`);
+
+      // Show error in container
+      if (containerRef.current) {
+        containerRef.current.innerHTML = `
+          <div style="text-align: center; padding: 40px; color: #c33;">
+            <h3>Error Loading PDF</h3>
+            <p>${err.message || 'Unknown error occurred'}</p>
+            <p style="font-size: 12px; margin-top: 16px;">Check console for more details</p>
+          </div>
+        `;
+      }
     }
   }, [pdfDoc, totalPages, renderSinglePageAsHTML]);
 

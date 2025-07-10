@@ -181,40 +181,44 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
           textContent.items.length
         );
 
-        // Create page container
+        // Create page container with improved styling
         const pageContainer = document.createElement('div');
         pageContainer.className = 'pdf-page';
         pageContainer.style.cssText = `
           position: relative;
           width: ${viewport.width}px;
           height: ${viewport.height}px;
-          margin: 0 auto 40px auto;
+          margin: 0 auto 30px auto;
           background: white;
-          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-          border: 1px solid #e0e0e0;
-          overflow: hidden;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+          border: 1px solid #d1d5db;
+          overflow: visible;
           user-select: text;
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
           page-break-after: always;
+          cursor: text;
         `;
 
-        // Add page number indicator
+        // Add page number indicator with better styling
         const pageLabel = document.createElement('div');
         pageLabel.textContent = `Page ${pageNumber}`;
         pageLabel.style.cssText = `
           position: absolute;
-          top: -30px;
-          left: 0;
-          font-size: 12px;
-          color: #666;
-          background: #f5f5f5;
-          padding: 4px 8px;
-          border-radius: 4px;
+          top: -35px;
+          left: 50%;
+          transform: translateX(-50%);
+          font-size: 11px;
+          color: #6b7280;
+          background: #f9fafb;
+          padding: 3px 8px;
+          border-radius: 12px;
           font-weight: 500;
+          border: 1px solid #e5e7eb;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         `;
         pageContainer.appendChild(pageLabel);
 
-        // Create text layer
+        // Create text layer with better positioning
         const textLayer = document.createElement('div');
         textLayer.style.cssText = `
           position: absolute;
@@ -224,11 +228,12 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
           height: 100%;
           z-index: 2;
           pointer-events: auto;
+          overflow: visible;
         `;
 
         let processedItems = 0;
 
-        // Process text items and create HTML elements
+        // Process text items and create HTML elements with improved positioning
         textContent.items.forEach((item: any, index: number) => {
           if (!item.str || !item.str.trim()) return;
 
@@ -241,19 +246,47 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
           // Calculate position and size from transform matrix
           const transform = item.transform;
           const x = transform[4];
-          const y = viewport.height - transform[5]; // PDF coordinates are bottom-up
+          const y = transform[5];
           const scaleX = Math.abs(transform[0]);
           const scaleY = Math.abs(transform[3]);
-          const fontSize = Math.max(scaleY, 8); // Minimum font size
+
+          // More accurate font size calculation
+          const fontSize = Math.max(scaleY, 6);
+
+          // Calculate proper Y position (PDF coordinates are bottom-up)
+          const adjustedY = viewport.height - y - fontSize;
+
+          // Detect if text should be on same line (similar Y coordinates)
+          const tolerance = fontSize * 0.3;
+          let shouldGroup = false;
+
+          // Check if this text item should be grouped with previous items
+          const existingElements =
+            textLayer.querySelectorAll('.pdf-text-element');
+          if (existingElements.length > 0) {
+            const lastElement = existingElements[
+              existingElements.length - 1
+            ] as HTMLElement;
+            const lastY = parseFloat(lastElement.style.top);
+            const lastX = parseFloat(lastElement.style.left);
+            const lastWidth =
+              lastElement.offsetWidth ||
+              parseFloat(lastElement.style.width || '0');
+
+            // If Y positions are similar and X position follows logically
+            if (Math.abs(adjustedY - lastY) <= tolerance && x >= lastX) {
+              shouldGroup = true;
+            }
+          }
 
           textElement.style.cssText = `
             position: absolute;
             left: ${x}px;
-            top: ${y - fontSize}px;
+            top: ${adjustedY}px;
             font-size: ${fontSize}px;
             font-family: ${item.fontName || 'Arial, sans-serif'};
-            line-height: 1;
-            white-space: pre;
+            line-height: 1.2;
+            white-space: nowrap;
             cursor: text;
             user-select: text;
             color: #000;
@@ -262,29 +295,33 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
             background: transparent;
             border: none;
             margin: 0;
-            padding: 2px;
+            padding: 1px 2px;
             border-radius: 2px;
             transition: background-color 0.2s ease;
+            z-index: ${shouldGroup ? 10 : 5};
           `;
 
-          // Add hover effects
+          // Improved hover effects with better visual feedback
           textElement.addEventListener('mouseenter', () => {
-            textElement.style.backgroundColor = 'rgba(59, 130, 246, 0.1)';
-            textElement.style.outline = '1px solid rgba(59, 130, 246, 0.3)';
+            textElement.style.backgroundColor = 'rgba(59, 130, 246, 0.15)';
+            textElement.style.outline = '1px solid rgba(59, 130, 246, 0.4)';
+            textElement.style.zIndex = '20';
           });
 
           textElement.addEventListener('mouseleave', () => {
             if (!textElement.classList.contains('selected')) {
               textElement.style.backgroundColor = 'transparent';
               textElement.style.outline = 'none';
+              textElement.style.zIndex = shouldGroup ? '10' : '5';
             }
           });
 
-          // Add click selection
+          // Enhanced click selection with better visual feedback
           textElement.addEventListener('click', (e) => {
             e.preventDefault();
+            e.stopPropagation();
 
-            // Remove selection from other elements
+            // Remove selection from other elements on this page
             const allTextElements =
               pageContainer.querySelectorAll('.pdf-text-element');
             allTextElements.forEach((el) => {
@@ -292,20 +329,56 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
               if (el !== textElement) {
                 (el as HTMLElement).style.backgroundColor = 'transparent';
                 (el as HTMLElement).style.outline = 'none';
+                (el as HTMLElement).style.zIndex = '5';
               }
             });
 
-            // Select current element
+            // Select current element with enhanced styling
             textElement.classList.add('selected');
-            textElement.style.backgroundColor = 'rgba(59, 130, 246, 0.2)';
-            textElement.style.outline = '2px solid rgba(59, 130, 246, 0.5)';
+            textElement.style.backgroundColor = 'rgba(59, 130, 246, 0.25)';
+            textElement.style.outline = '2px solid rgba(59, 130, 246, 0.6)';
+            textElement.style.zIndex = '30';
 
-            // Select the text
+            // Select the text content
             const selection = window.getSelection();
             const range = document.createRange();
             range.selectNodeContents(textElement);
             selection?.removeAllRanges();
             selection?.addRange(range);
+          });
+
+          // Add double-click to select word/phrase
+          textElement.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            // Find nearby text elements that might be part of the same line/phrase
+            const allElements = Array.from(
+              textLayer.querySelectorAll('.pdf-text-element')
+            ) as HTMLElement[];
+            const currentY = adjustedY;
+            const currentX = x;
+
+            // Find elements on the same line
+            const sameLineElements = allElements
+              .filter((el) => {
+                const elY = parseFloat(el.style.top);
+                const elX = parseFloat(el.style.left);
+                return (
+                  Math.abs(elY - currentY) <= tolerance &&
+                  Math.abs(elX - currentX) <= fontSize * 10
+                ); // Within reasonable distance
+              })
+              .sort(
+                (a, b) => parseFloat(a.style.left) - parseFloat(b.style.left)
+              );
+
+            // Select all elements in the line
+            sameLineElements.forEach((el) => {
+              el.classList.add('selected');
+              el.style.backgroundColor = 'rgba(59, 130, 246, 0.25)';
+              el.style.outline = '2px solid rgba(59, 130, 246, 0.6)';
+            });
           });
 
           textLayer.appendChild(textElement);

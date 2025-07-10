@@ -10,7 +10,10 @@ interface PDFDocumentProxy {
 
 interface PDFPageProxy {
   getViewport: (options: { scale: number }) => any;
-  render: (renderContext: any) => { promise: Promise<void> };
+  render: (renderContext: {
+    canvasContext: CanvasRenderingContext2D | null;
+    viewport: any;
+  }) => { promise: Promise<void> };
   getTextContent: () => Promise<{
     items: Array<{
       str: string;
@@ -25,36 +28,21 @@ interface PDFPageProxy {
   getAnnotations: () => Promise<any[]>;
 }
 
-// Extend existing window interface instead of redefining
-interface PDFLib {
-  getDocument: (src: Uint8Array) => { promise: Promise<PDFDocumentProxy> };
-  GlobalWorkerOptions: {
-    workerSrc: string;
-  };
-  renderTextLayer?: (options: {
-    textContent: any;
-    container: HTMLElement;
-    viewport: any;
-    textDivs: any[];
-  }) => void;
-}
-
 interface PDFViewerProps {}
 
 const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
-  const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [scale, setScale] = useState(1.0);
+  const [scale, setScale] = useState(1.2);
   const [pdfJsLoaded, setPdfJsLoaded] = useState(false);
-  const [renderMode, setRenderMode] = useState<'html' | 'canvas'>('html');
   const [isConverting, setIsConverting] = useState(false);
   const [conversionFormat, setConversionFormat] = useState<'png' | 'jpeg'>(
     'png'
   );
+  const [allPagesRendered, setAllPagesRendered] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -120,6 +108,7 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
       setIsLoading(true);
       setError(null);
       setPdfFile(file);
+      setAllPagesRendered(false);
 
       try {
         const fileReader = new FileReader();
@@ -135,7 +124,6 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
             .promise;
           setPdfDoc(pdf);
           setTotalPages(pdf.numPages);
-          setCurrentPage(1);
           setIsLoading(false);
         };
 
@@ -164,356 +152,241 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
     [handleFileUpload]
   );
 
-  // Helper function to extract color from PDF operations
-  const extractTextColor = (operatorList: any): string => {
-    try {
-      // Look for color setting operations in the PDF
-      const ops = operatorList.fnArray;
-      const args = operatorList.argsArray;
+  // Render a single page as clean HTML
+  const renderSinglePageAsHTML = useCallback(
+    async (pageNumber: number): Promise<HTMLElement> => {
+      if (!pdfDoc) throw new Error('No PDF document loaded');
 
-      let currentColor = '#000000'; // Default black
+      const page = await pdfDoc.getPage(pageNumber);
+      const viewport = page.getViewport({ scale });
+      const textContent = await page.getTextContent();
 
-      for (let i = 0; i < ops.length; i++) {
-        // PDF.js operator codes for color setting
-        if (ops[i] === 82 || ops[i] === 84) {
-          // setFillColor operations
-          const colorArgs = args[i];
-          if (colorArgs && colorArgs.length >= 3) {
-            // Convert RGB values (0-1) to hex
-            const r = Math.round(colorArgs[0] * 255);
-            const g = Math.round(colorArgs[1] * 255);
-            const b = Math.round(colorArgs[2] * 255);
-            currentColor = `rgb(${r}, ${g}, ${b})`;
-          }
-        }
-      }
+      // Create page container
+      const pageContainer = document.createElement('div');
+      pageContainer.className = 'pdf-page';
+      pageContainer.style.cssText = `
+        position: relative;
+        width: ${viewport.width}px;
+        height: ${viewport.height}px;
+        margin: 0 auto 40px auto;
+        background: white;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        border: 1px solid #e0e0e0;
+        overflow: hidden;
+        user-select: text;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        page-break-after: always;
+      `;
 
-      return currentColor;
-    } catch (error) {
-      return '#000000'; // Default to black if color extraction fails
-    }
-  };
+      // Add page number indicator
+      const pageLabel = document.createElement('div');
+      pageLabel.textContent = `Page ${pageNumber}`;
+      pageLabel.style.cssText = `
+        position: absolute;
+        top: -30px;
+        left: 0;
+        font-size: 12px;
+        color: #666;
+        background: #f5f5f5;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-weight: 500;
+      `;
+      pageContainer.appendChild(pageLabel);
 
-  // Render page as HTML elements with improved text handling
-  const renderPageAsHTML = useCallback(
-    async (pageNumber: number) => {
-      if (!pdfDoc || !containerRef.current) return;
+      // Create text layer
+      const textLayer = document.createElement('div');
+      textLayer.style.cssText = `
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 2;
+        pointer-events: auto;
+      `;
 
-      try {
-        containerRef.current.innerHTML = '';
+      // Process text items and create HTML elements
+      textContent.items.forEach((item: any, index: number) => {
+        if (!item.str.trim()) return;
 
-        const page = await pdfDoc.getPage(pageNumber);
-        const viewport = page.getViewport({ scale });
-        const textContent = await page.getTextContent();
+        const textElement = document.createElement('div');
+        textElement.textContent = item.str;
+        textElement.className = 'pdf-text-element';
+        textElement.dataset.pageNumber = pageNumber.toString();
+        textElement.dataset.textIndex = index.toString();
 
-        // Get annotations for highlights and colors
-        let annotations: any[] = [];
-        try {
-          annotations = await page.getAnnotations();
-        } catch (error) {
-          console.warn('Could not load annotations:', error);
-        }
+        // Calculate position and size from transform matrix
+        const transform = item.transform;
+        const x = transform[4];
+        const y = viewport.height - transform[5]; // PDF coordinates are bottom-up
+        const scaleX = Math.abs(transform[0]);
+        const scaleY = Math.abs(transform[3]);
+        const fontSize = Math.max(scaleY, 8); // Minimum font size
 
-        // Create page container
-        const pageContainer = document.createElement('div');
-        pageContainer.style.cssText = `
-          position: relative;
-          width: ${viewport.width}px;
-          height: ${viewport.height}px;
-          margin: 20px auto;
-          background: white;
-          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-          border: 1px solid #e0e0e0;
-          overflow: hidden;
+        textElement.style.cssText = `
+          position: absolute;
+          left: ${x}px;
+          top: ${y - fontSize}px;
+          font-size: ${fontSize}px;
+          font-family: ${item.fontName || 'Arial, sans-serif'};
+          line-height: 1;
+          white-space: pre;
+          cursor: text;
           user-select: text;
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          color: #000;
+          transform-origin: left top;
+          ${scaleX !== scaleY ? `transform: scaleX(${scaleX / scaleY});` : ''}
+          background: transparent;
+          border: none;
+          margin: 0;
+          padding: 2px;
+          border-radius: 2px;
+          transition: background-color 0.2s ease;
         `;
 
-        // Render background canvas for images and graphics (but hide text)
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        canvas.style.cssText = `
-          position: absolute;
-          top: 0;
-          left: 0;
-          width: 100%;
-          height: 100%;
-          z-index: 1;
-        `;
+        // Add hover effects
+        textElement.addEventListener('mouseenter', () => {
+          textElement.style.backgroundColor = 'rgba(59, 130, 246, 0.1)';
+          textElement.style.outline = '1px solid rgba(59, 130, 246, 0.3)';
+        });
 
-        // Custom render context to hide text from canvas
-        const renderContext = {
-          canvasContext: context,
-          viewport: viewport,
-          renderInteractiveForms: false,
-          // This option helps reduce text rendering on canvas
-          textLayerMode: 0,
-        };
+        textElement.addEventListener('mouseleave', () => {
+          if (!textElement.classList.contains('selected')) {
+            textElement.style.backgroundColor = 'transparent';
+            textElement.style.outline = 'none';
+          }
+        });
 
-        // Render the page but intercept text operations
-        try {
-          const renderTask = page.render(renderContext);
-          await renderTask.promise;
-        } catch (renderError) {
-          console.warn('Render error:', renderError);
-          // Fallback: render normally if custom rendering fails
-          await page.render({
-            canvasContext: context,
-            viewport: viewport,
-          }).promise;
-        }
+        // Add click selection
+        textElement.addEventListener('click', (e) => {
+          e.preventDefault();
 
-        pageContainer.appendChild(canvas);
-
-        // Create HTML text layer with better color detection
-        const textLayer = document.createElement('div');
-        textLayer.style.cssText = `
-          position: absolute;
-          top: 0;
-          left: 0;
-          width: 100%;
-          height: 100%;
-          z-index: 2;
-          pointer-events: auto;
-        `;
-
-        // Get operator list to extract colors
-        let operatorList: any = null;
-        try {
-          operatorList = await (page as any).getOperatorList();
-        } catch (error) {
-          console.warn(
-            'Could not get operator list for color extraction:',
-            error
-          );
-        }
-
-        // Process text items and create HTML elements with color preservation
-        textContent.items.forEach((item: any, index: number) => {
-          if (!item.str.trim()) return;
-
-          const textElement = document.createElement('div');
-          textElement.textContent = item.str;
-
-          // Calculate position and size from transform matrix
-          const transform = item.transform;
-          const x = transform[4];
-          const y = viewport.height - transform[5]; // PDF coordinates are bottom-up
-          const scaleX = Math.abs(transform[0]);
-          const scaleY = Math.abs(transform[3]);
-          const fontSize = Math.max(scaleY, 8); // Minimum font size
-
-          // Try to extract color information
-          let textColor = '#000000'; // Default black
-
-          // Check if there are annotations that might affect this text
-          annotations.forEach((annotation) => {
-            if (annotation.subtype === 'Highlight' && annotation.color) {
-              // Check if text is within highlight bounds
-              const annotRect = annotation.rect;
-              if (annotRect && annotRect.length >= 4) {
-                const [x1, y1, x2, y2] = annotRect;
-                const textX = x;
-                const textY = viewport.height - y;
-
-                if (textX >= x1 && textX <= x2 && textY >= y1 && textY <= y2) {
-                  // Text is within highlight area
-                  if (annotation.color && annotation.color.length >= 3) {
-                    const [r, g, b] = annotation.color;
-                    textColor = `rgb(${Math.round(r * 255)}, ${Math.round(
-                      g * 255
-                    )}, ${Math.round(b * 255)})`;
-                  }
-                }
-              }
+          // Remove selection from other elements
+          const allTextElements =
+            pageContainer.querySelectorAll('.pdf-text-element');
+          allTextElements.forEach((el) => {
+            el.classList.remove('selected');
+            if (el !== textElement) {
+              (el as HTMLElement).style.backgroundColor = 'transparent';
+              (el as HTMLElement).style.outline = 'none';
             }
           });
 
-          // If we have operator list, try to extract text color from it
-          if (operatorList && !textColor.includes('rgb')) {
-            textColor = extractTextColor(operatorList);
-          }
+          // Select current element
+          textElement.classList.add('selected');
+          textElement.style.backgroundColor = 'rgba(59, 130, 246, 0.2)';
+          textElement.style.outline = '2px solid rgba(59, 130, 246, 0.5)';
 
-          textElement.style.cssText = `
-            position: absolute;
-            left: ${x}px;
-            top: ${y - fontSize}px;
-            font-size: ${fontSize}px;
-            font-family: ${item.fontName || 'Arial, sans-serif'};
-            line-height: 1;
-            white-space: pre;
-            cursor: text;
-            user-select: text;
-            color: ${textColor};
-            transform-origin: left top;
-            ${scaleX !== scaleY ? `transform: scaleX(${scaleX / scaleY});` : ''}
-            background: transparent;
-            border: none;
-            margin: 0;
-            padding: 0;
-          `;
-
-          textLayer.appendChild(textElement);
+          // Select the text
+          const selection = window.getSelection();
+          const range = document.createRange();
+          range.selectNodeContents(textElement);
+          selection?.removeAllRanges();
+          selection?.addRange(range);
         });
 
-        // Add highlight overlays from annotations
-        annotations.forEach((annotation) => {
-          if (annotation.subtype === 'Highlight' && annotation.rect) {
-            const [x1, y1, x2, y2] = annotation.rect;
-            const highlightElement = document.createElement('div');
+        textLayer.appendChild(textElement);
+      });
 
-            let backgroundColor = 'rgba(255, 255, 0, 0.3)'; // Default yellow
-            if (annotation.color && annotation.color.length >= 3) {
-              const [r, g, b] = annotation.color;
-              backgroundColor = `rgba(${Math.round(r * 255)}, ${Math.round(
-                g * 255
-              )}, ${Math.round(b * 255)}, 0.3)`;
-            }
-
-            highlightElement.style.cssText = `
-              position: absolute;
-              left: ${x1}px;
-              top: ${viewport.height - y2}px;
-              width: ${x2 - x1}px;
-              height: ${y2 - y1}px;
-              background-color: ${backgroundColor};
-              z-index: 1;
-              pointer-events: none;
-            `;
-
-            textLayer.appendChild(highlightElement);
-          }
-        });
-
-        pageContainer.appendChild(textLayer);
-        containerRef.current.appendChild(pageContainer);
-      } catch (err) {
-        console.error('Error rendering HTML page:', err);
-        setError('Failed to render PDF page as HTML');
-      }
+      pageContainer.appendChild(textLayer);
+      return pageContainer;
     },
     [pdfDoc, scale]
   );
 
-  // Render page with canvas (original method)
-  const renderPageAsCanvas = useCallback(
-    async (pageNumber: number) => {
-      if (!pdfDoc || !containerRef.current) return;
+  // Render all pages in scrollable format
+  const renderAllPages = useCallback(async () => {
+    if (!pdfDoc || !containerRef.current) return;
 
-      try {
-        containerRef.current.innerHTML = '';
+    try {
+      containerRef.current.innerHTML = '';
+      setAllPagesRendered(false);
 
-        const page = await pdfDoc.getPage(pageNumber);
-        const viewport = page.getViewport({ scale });
-        const textContent = await page.getTextContent();
+      // Create a loading indicator
+      const loadingDiv = document.createElement('div');
+      loadingDiv.innerHTML = `
+        <div style="text-align: center; padding: 40px; color: #666;">
+          <div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+          <p style="margin-top: 16px;">Rendering pages...</p>
+        </div>
+      `;
 
-        // Create canvas
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
-        canvas.style.cssText = `
-          position: absolute;
-          top: 0;
-          left: 0;
-          border: 1px solid #e0e0e0;
-          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        `;
+      // Add CSS for loading animation
+      const style = document.createElement('style');
+      style.textContent = `
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      `;
+      if (!document.head.querySelector('style[data-pdf-viewer]')) {
+        style.setAttribute('data-pdf-viewer', 'true');
+        document.head.appendChild(style);
+      }
 
-        // Create text layer
-        const textLayerDiv = document.createElement('div');
-        textLayerDiv.style.cssText = `
-          position: absolute;
-          top: 0;
-          left: 0;
-          width: ${viewport.width}px;
-          height: ${viewport.height}px;
-          font-size: 1px;
-          line-height: 1;
-          transform-origin: 0% 0%;
-          z-index: 2;
-        `;
+      containerRef.current.appendChild(loadingDiv);
 
-        // Create page container
-        const pageContainer = document.createElement('div');
-        pageContainer.style.cssText = `
-          position: relative;
-          width: ${viewport.width}px;
-          height: ${viewport.height}px;
-          margin: 20px auto;
-          background: white;
-        `;
+      // Render pages progressively
+      const fragment = document.createDocumentFragment();
 
-        pageContainer.appendChild(canvas);
-        pageContainer.appendChild(textLayerDiv);
-        containerRef.current.appendChild(pageContainer);
+      for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+        try {
+          const pageElement = await renderSinglePageAsHTML(pageNum);
+          fragment.appendChild(pageElement);
 
-        // Render canvas
-        const renderContext = {
-          canvasContext: context,
-          viewport: viewport,
-        };
-        await page.render(renderContext).promise;
-
-        // Render text layer
-        textContent.items.forEach((item: any) => {
-          const textDiv = document.createElement('div');
-          textDiv.textContent = item.str;
-          textDiv.style.cssText = `
-            position: absolute;
-            white-space: pre;
-            color: transparent;
-            user-select: text;
-            cursor: text;
-            left: ${item.transform[4]}px;
-            bottom: ${item.transform[5]}px;
-            font-size: ${Math.sqrt(
-              item.transform[0] * item.transform[0] +
-                item.transform[1] * item.transform[1]
-            )}px;
-            font-family: ${item.fontName || 'sans-serif'};
+          // Update loading progress
+          loadingDiv.innerHTML = `
+            <div style="text-align: center; padding: 40px; color: #666;">
+              <div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+              <p style="margin-top: 16px;">Rendering page ${pageNum} of ${totalPages}...</p>
+            </div>
           `;
-          textLayerDiv.appendChild(textDiv);
-        });
-      } catch (err) {
-        console.error('Error rendering canvas page:', err);
-        setError('Failed to render PDF page');
-      }
-    },
-    [pdfDoc, scale]
-  );
+        } catch (error) {
+          console.error(`Error rendering page ${pageNum}:`, error);
 
-  // Main render function
-  const renderPage = useCallback(
-    async (pageNumber: number) => {
-      if (renderMode === 'html') {
-        await renderPageAsHTML(pageNumber);
-      } else {
-        await renderPageAsCanvas(pageNumber);
+          // Create error placeholder for failed page
+          const errorPage = document.createElement('div');
+          errorPage.style.cssText = `
+            width: 800px;
+            height: 200px;
+            margin: 0 auto 40px auto;
+            background: #fee;
+            border: 1px solid #fcc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #c33;
+            font-family: Arial, sans-serif;
+          `;
+          errorPage.textContent = `Error rendering page ${pageNum}`;
+          fragment.appendChild(errorPage);
+        }
       }
-    },
-    [renderMode, renderPageAsHTML, renderPageAsCanvas]
-  );
 
+      // Replace loading with rendered pages
+      containerRef.current.innerHTML = '';
+      containerRef.current.appendChild(fragment);
+      setAllPagesRendered(true);
+    } catch (err) {
+      console.error('Error rendering pages:', err);
+      setError('Failed to render PDF pages');
+    }
+  }, [pdfDoc, totalPages, renderSinglePageAsHTML]);
+
+  // Trigger rendering when PDF is loaded
   useEffect(() => {
-    if (pdfDoc && currentPage) {
-      renderPage(currentPage);
+    if (pdfDoc && totalPages > 0) {
+      renderAllPages();
     }
-  }, [pdfDoc, currentPage, renderPage]);
+  }, [pdfDoc, totalPages, renderAllPages]);
 
-  const goToNextPage = () => {
-    if (currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
+  // Re-render when scale changes
+  useEffect(() => {
+    if (pdfDoc && allPagesRendered) {
+      renderAllPages();
     }
-  };
-
-  const goToPreviousPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-    }
-  };
+  }, [scale, pdfDoc, allPagesRendered, renderAllPages]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -540,16 +413,27 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
     setScale((prev) => Math.max(prev - 0.2, 0.3));
   };
 
-  // Convert current page to image for download
-  const downloadPageAsImage = useCallback(async () => {
-    if (!pdfDoc) return;
+  const resetZoom = () => {
+    setScale(1.2);
+  };
+
+  // Convert current view to image for download
+  const downloadAsImage = useCallback(async () => {
+    if (!pdfDoc || !containerRef.current) return;
 
     try {
       setIsConverting(true);
-      const page = await pdfDoc.getPage(currentPage);
+
+      // Create a high-resolution canvas for the first page as example
+      const page = await pdfDoc.getPage(1);
       const viewport = page.getViewport({ scale: 2 }); // High resolution
       const canvas = document.createElement('canvas');
       const context = canvas.getContext('2d');
+
+      if (!context) {
+        setError('Failed to get canvas context');
+        return;
+      }
 
       canvas.height = viewport.height;
       canvas.width = viewport.width;
@@ -559,7 +443,8 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
         viewport: viewport,
       };
 
-      await page.render(renderContext).promise;
+      // Type assertion to handle PDF.js types
+      await (page as any).render(renderContext).promise;
 
       canvas.toBlob(
         (blob) => {
@@ -568,8 +453,8 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
             const link = document.createElement('a');
             link.href = url;
             link.download = `${
-              pdfFile?.name?.replace('.pdf', '') || 'page'
-            }_page_${currentPage}.${conversionFormat}`;
+              pdfFile?.name?.replace('.pdf', '') || 'document'
+            }.${conversionFormat}`;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
@@ -580,31 +465,31 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
         conversionFormat === 'jpeg' ? 0.92 : undefined
       );
     } catch (error) {
-      console.error('Error converting page:', error);
-      setError('Failed to convert page to image');
+      console.error('Error converting to image:', error);
+      setError('Failed to convert to image');
     } finally {
       setIsConverting(false);
     }
-  }, [pdfDoc, currentPage, pdfFile?.name, conversionFormat]);
+  }, [pdfDoc, pdfFile?.name, conversionFormat]);
 
   return (
     <div className='flex h-screen bg-gray-100'>
-      {/* Left Panel - Controls (30%) */}
-      <div className='w-[30%] bg-white border-r border-gray-300 p-6 flex flex-col overflow-y-auto'>
+      {/* Left Panel - Controls (25%) */}
+      <div className='w-[25%] bg-white border-r border-gray-300 p-6 flex flex-col overflow-y-auto'>
         <h2 className='text-2xl font-bold mb-6 text-gray-800'>
-          Enhanced PDF Viewer
+          HTML PDF Viewer
         </h2>
 
         {/* Upload Area */}
         <div
-          className='border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-blue-500 transition-colors cursor-pointer mb-6'
+          className='border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-500 transition-colors cursor-pointer mb-6'
           onDragOver={handleDragOver}
           onDrop={handleDrop}
           onClick={() => fileInputRef.current?.click()}
         >
           <div className='text-gray-500'>
             <svg
-              className='w-12 h-12 mx-auto mb-4'
+              className='w-10 h-10 mx-auto mb-3'
               fill='none'
               stroke='currentColor'
               viewBox='0 0 24 24'
@@ -616,8 +501,8 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
                 d='M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12'
               />
             </svg>
-            <p className='text-lg mb-2'>Click to upload or drag & drop</p>
-            <p className='text-sm'>PDF files only</p>
+            <p className='text-lg mb-2'>Upload PDF</p>
+            <p className='text-sm'>Click or drag & drop</p>
           </div>
           <input
             ref={fileInputRef}
@@ -634,34 +519,8 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
             <h3 className='font-semibold text-gray-800 mb-2'>Current File:</h3>
             <p className='text-sm text-gray-600 break-all'>{pdfFile.name}</p>
             <p className='text-xs text-gray-500 mt-1'>
-              {(pdfFile.size / 1024 / 1024).toFixed(2)} MB
+              {(pdfFile.size / 1024 / 1024).toFixed(2)} MB • {totalPages} pages
             </p>
-          </div>
-        )}
-
-        {/* Render Mode Selection */}
-        {pdfDoc && (
-          <div className='space-y-4 mb-6'>
-            <div>
-              <label className='text-sm text-gray-600 mb-2 block'>
-                Render Mode:
-              </label>
-              <select
-                value={renderMode}
-                onChange={(e) =>
-                  setRenderMode(e.target.value as 'html' | 'canvas')
-                }
-                className='w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500'
-              >
-                <option value='html'>HTML Mode (Clean text + colors)</option>
-                <option value='canvas'>Canvas Mode (Traditional)</option>
-              </select>
-              <p className='text-xs text-gray-500 mt-1'>
-                {renderMode === 'html'
-                  ? 'Clean text selection with color preservation'
-                  : 'Traditional canvas rendering'}
-              </p>
-            </div>
           </div>
         )}
 
@@ -669,63 +528,45 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
         {pdfDoc && (
           <div className='space-y-4'>
             <div className='flex items-center justify-between'>
-              <span className='text-sm text-gray-600'>Page:</span>
-              <span className='text-sm font-medium'>
-                {currentPage} of {totalPages}
-              </span>
-            </div>
-
-            <div className='flex gap-2'>
-              <button
-                onClick={goToPreviousPage}
-                disabled={currentPage === 1}
-                className='flex-1 px-3 py-2 bg-blue-500 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-600 transition-colors'
-              >
-                Previous
-              </button>
-              <button
-                onClick={goToNextPage}
-                disabled={currentPage === totalPages}
-                className='flex-1 px-3 py-2 bg-blue-500 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-600 transition-colors'
-              >
-                Next
-              </button>
-            </div>
-
-            <div className='flex items-center justify-between'>
               <span className='text-sm text-gray-600'>Zoom:</span>
               <span className='text-sm font-medium'>
                 {Math.round(scale * 100)}%
               </span>
             </div>
 
-            <div className='flex gap-2'>
+            <div className='grid grid-cols-3 gap-2'>
               <button
                 onClick={zoomOut}
-                className='flex-1 px-3 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors'
+                className='px-3 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors text-sm'
               >
-                Zoom Out
+                -
+              </button>
+              <button
+                onClick={resetZoom}
+                className='px-3 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors text-sm'
+              >
+                Reset
               </button>
               <button
                 onClick={zoomIn}
-                className='flex-1 px-3 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors'
+                className='px-3 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors text-sm'
               >
-                Zoom In
+                +
               </button>
             </div>
 
-            {/* Image Export */}
+            {/* Export Options */}
             <div className='border-t pt-4 space-y-3'>
-              <h3 className='font-semibold text-gray-800'>Export Options</h3>
+              <h3 className='font-semibold text-gray-800'>Export</h3>
 
               <div className='space-y-2'>
-                <label className='text-sm text-gray-600'>Image Format:</label>
+                <label className='text-sm text-gray-600'>Format:</label>
                 <select
                   value={conversionFormat}
                   onChange={(e) =>
                     setConversionFormat(e.target.value as 'png' | 'jpeg')
                   }
-                  className='w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500'
+                  className='w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm'
                 >
                   <option value='png'>PNG</option>
                   <option value='jpeg'>JPEG</option>
@@ -733,12 +574,26 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
               </div>
 
               <button
-                onClick={downloadPageAsImage}
+                onClick={downloadAsImage}
                 disabled={isConverting}
-                className='w-full px-3 py-2 bg-green-500 text-white rounded disabled:bg-gray-300 hover:bg-green-600 transition-colors'
+                className='w-full px-3 py-2 bg-green-500 text-white rounded disabled:bg-gray-300 hover:bg-green-600 transition-colors text-sm'
               >
                 {isConverting ? 'Converting...' : 'Download as Image'}
               </button>
+            </div>
+
+            {/* Instructions */}
+            <div className='border-t pt-4 space-y-2'>
+              <h3 className='font-semibold text-gray-800 text-sm'>
+                How to use:
+              </h3>
+              <ul className='text-xs text-gray-600 space-y-1'>
+                <li>• Scroll to navigate through pages</li>
+                <li>• Hover over text to highlight</li>
+                <li>• Click to select entire text element</li>
+                <li>• Use Ctrl+A to select all text</li>
+                <li>• Copy selected text with Ctrl+C</li>
+              </ul>
             </div>
           </div>
         )}
@@ -751,9 +606,9 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
         )}
       </div>
 
-      {/* Right Panel - PDF Display (70%) */}
-      <div className='w-[70%] bg-gray-50 flex flex-col'>
-        <div className='flex-1 overflow-auto p-6'>
+      {/* Right Panel - PDF Display (75%) */}
+      <div className='w-[75%] bg-gray-50 flex flex-col'>
+        <div className='flex-1 overflow-y-auto p-6'>
           {isLoading && (
             <div className='flex items-center justify-center h-full'>
               <div className='text-center'>

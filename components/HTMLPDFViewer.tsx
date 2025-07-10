@@ -43,6 +43,7 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
     'png'
   );
   const [allPagesRendered, setAllPagesRendered] = useState(false);
+  const [isRendering, setIsRendering] = useState(false); // Add rendering flag
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -109,6 +110,7 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
       setError(null);
       setPdfFile(file);
       setAllPagesRendered(false);
+      setIsRendering(false); // Reset rendering flag
 
       try {
         const fileReader = new FileReader();
@@ -334,7 +336,13 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
       return;
     }
 
+    if (isRendering) {
+      console.log('Already rendering, skipping...');
+      return;
+    }
+
     console.log('Starting to render', totalPages, 'pages');
+    setIsRendering(true);
 
     try {
       containerRef.current.innerHTML = '';
@@ -470,22 +478,27 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
           </div>
         `;
       }
+    } finally {
+      setIsRendering(false);
     }
-  }, [pdfDoc, totalPages, renderSinglePageAsHTML]);
+  }, [pdfDoc, totalPages, isRendering]);
 
-  // Trigger rendering when PDF is loaded
+  // Trigger rendering when PDF is loaded (without renderAllPages in dependencies)
   useEffect(() => {
-    if (pdfDoc && totalPages > 0) {
+    if (pdfDoc && totalPages > 0 && !allPagesRendered) {
+      console.log('PDF loaded, starting initial render');
       renderAllPages();
     }
-  }, [pdfDoc, totalPages, renderAllPages]);
+  }, [pdfDoc, totalPages]); // Removed renderAllPages from dependencies
 
-  // Re-render when scale changes
+  // Re-render when scale changes (simplified)
   useEffect(() => {
-    if (pdfDoc && allPagesRendered) {
-      renderAllPages();
+    if (pdfDoc && allPagesRendered && scale !== 1.2) {
+      console.log('Scale changed, re-rendering');
+      setAllPagesRendered(false); // Reset flag first
+      setTimeout(() => renderAllPages(), 100); // Small delay to prevent race condition
     }
-  }, [scale, pdfDoc, allPagesRendered, renderAllPages]);
+  }, [scale]); // Only depend on scale
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();

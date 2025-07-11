@@ -2,121 +2,208 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 
-// Type definitions for PDF.js
+// --- Type Definitions for PDF.js ---
+// These interfaces help TypeScript understand the shape of the PDF.js objects.
 interface PDFDocumentProxy {
   numPages: number;
   getPage: (pageNumber: number) => Promise<PDFPageProxy>;
 }
 
 interface PDFPageProxy {
-  getViewport: (options: { scale: number }) => any;
+  getViewport: (options: { scale: number }) => PDFPageViewport;
   render: (renderContext: {
-    canvasContext: CanvasRenderingContext2D | null;
-    viewport: any;
-  }) => { promise: Promise<void> };
-  getTextContent: () => Promise<{
-    items: Array<{
-      str: string;
-      transform: number[];
-      fontName?: string;
-      hasEOL?: boolean;
-      width?: number;
-      height?: number;
-      dir?: string;
-    }>;
-  }>;
-  getAnnotations: () => Promise<any[]>;
+    canvasContext: CanvasRenderingContext2D;
+    viewport: PDFPageViewport;
+  }) => RenderTask;
+  getTextContent: () => Promise<TextContent>;
 }
 
-interface PDFViewerProps {}
+interface PDFPageViewport {
+  width: number;
+  height: number;
+  scale: number;
+}
 
-const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
-  const [pdfFile, setPdfFile] = useState<File | null>(null);
-  const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
-  const [totalPages, setTotalPages] = useState(0);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [scale, setScale] = useState(1.2);
-  const [pdfJsLoaded, setPdfJsLoaded] = useState(false);
-  const [isConverting, setIsConverting] = useState(false);
-  const [conversionFormat, setConversionFormat] = useState<'png' | 'jpeg'>(
-    'png'
-  );
-  const [allPagesRendered, setAllPagesRendered] = useState(false);
-  const [isRendering, setIsRendering] = useState(false); // Add rendering flag
+interface TextContent {
+  items: any[];
+}
+
+interface RenderTask {
+  promise: Promise<void>;
+}
+
+// --- PDF Page Component ---
+// This component is responsible for rendering a single page of the PDF.
+// It uses a <canvas> for the visual content and a separate <div> for the selectable text layer.
+const PDFPage = ({
+  pdfDoc,
+  pageNumber,
+  scale,
+}: {
+  pdfDoc: PDFDocumentProxy;
+  pageNumber: number;
+  scale: number;
+}) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load PDF.js dynamically
   useEffect(() => {
-    const loadPdfJs = async () => {
+    if (!pdfDoc) return;
+
+    const renderPage = async () => {
       try {
-        const script = document.createElement('script');
-        script.src =
-          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.3.31/pdf.min.mjs';
-        script.type = 'module';
+        const page = await pdfDoc.getPage(pageNumber);
+        const viewport = page.getViewport({ scale });
 
-        script.onload = () => {
-          if ((window as any).pdfjsLib) {
-            (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
-              'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.3.31/pdf.worker.min.mjs';
-            setPdfJsLoaded(true);
-          }
-        };
+        const canvas = canvasRef.current;
+        const textLayer = textLayerRef.current;
+        const container = containerRef.current;
+        if (!canvas || !textLayer || !container) return;
 
-        script.onerror = () => {
-          setError('Failed to load PDF library');
-        };
+        // Set the dimensions for the container, which holds both layers.
+        container.style.width = `${viewport.width}px`;
+        container.style.height = `${viewport.height}px`;
 
-        document.head.appendChild(script);
+        // Prepare the canvas for high-resolution displays.
+        canvas.width = viewport.width * window.devicePixelRatio;
+        canvas.height = viewport.height * window.devicePixelRatio;
+        canvas.style.width = `${viewport.width}px`;
+        canvas.style.height = `${viewport.height}px`;
 
-        try {
-          const pdfjsLib = await eval(
-            `import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.3.31/pdf.min.mjs')`
-          );
-          pdfjsLib.GlobalWorkerOptions.workerSrc =
-            'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.3.31/pdf.worker.min.mjs';
-          (window as any).pdfjsLib = pdfjsLib;
-          setPdfJsLoaded(true);
-        } catch (importError) {
-          console.warn(
-            'Dynamic import failed, falling back to script tag method'
-          );
-        }
-      } catch (err) {
-        console.error('Failed to load PDF.js:', err);
-        setError('Failed to load PDF library');
+        const canvasContext = canvas.getContext('2d');
+        if (!canvasContext) return;
+
+        // Scale the canvas context for high-DPI rendering.
+        canvasContext.scale(window.devicePixelRatio, window.devicePixelRatio);
+
+        // 1. Render the visual page content onto the Canvas.
+        const renderContext = { canvasContext, viewport };
+        await page.render(renderContext).promise;
+
+        // 2. Render the invisible, selectable text layer over the canvas.
+        const textContent = await page.getTextContent();
+        textLayer.innerHTML = ''; // Clear any previous text content.
+
+        // Use the PDF.js utility to build the text layer.
+        (window as any).pdfjsLib.renderTextLayer({
+          textContentSource: textContent,
+          container: textLayer,
+          viewport: viewport,
+          textDivs: [],
+        });
+      } catch (error) {
+        console.error(`Failed to render page ${pageNumber}:`, error);
       }
     };
 
-    loadPdfJs();
+    renderPage();
+  }, [pdfDoc, pageNumber, scale]);
+
+  return (
+    <div
+      ref={containerRef}
+      className='pdf-page-container relative bg-white shadow-lg mx-auto mb-8 border border-gray-200'
+    >
+      <canvas ref={canvasRef} className='pdf-canvas-layer' />
+      <div ref={textLayerRef} className='pdf-text-layer' />
+    </div>
+  );
+};
+
+// --- Main PDF Viewer Component ---
+const HTMLPDFViewer: React.FC = () => {
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [scale, setScale] = useState(1.5);
+  const [pdfJsLoaded, setPdfJsLoaded] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // **FIXED**: Load PDF.js 5.3.93 using proper ES module approach
+  // Alternative: Using module script tag for PDF.js 5.3.93
+  useEffect(() => {
+    if ((window as any).pdfjsLib) {
+      setPdfJsLoaded(true);
+      return;
+    }
+
+    // Create a module script to load PDF.js
+    const script = document.createElement('script');
+    script.type = 'module';
+    script.innerHTML = `
+    import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.3.93/pdf.min.mjs';
+    
+    // Configure the worker
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.3.93/pdf.worker.min.mjs';
+    
+    // Make it globally available
+    window.pdfjsLib = pdfjsLib;
+    
+    // Dispatch a custom event to notify React that PDF.js is loaded
+    window.dispatchEvent(new CustomEvent('pdfjsLoaded'));
+  `;
+
+    // Listen for the custom event
+    const handlePdfJsLoaded = () => {
+      setPdfJsLoaded(true);
+      window.removeEventListener('pdfjsLoaded', handlePdfJsLoaded);
+    };
+
+    window.addEventListener('pdfjsLoaded', handlePdfJsLoaded);
+
+    script.onerror = () => {
+      setError(
+        'Failed to load the PDF library script. Please check your network connection.'
+      );
+      window.removeEventListener('pdfjsLoaded', handlePdfJsLoaded);
+    };
+
+    document.head.appendChild(script);
+
+    // Load the CSS
+    const textLayerCss = document.createElement('link');
+    textLayerCss.rel = 'stylesheet';
+    textLayerCss.href =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/5.3.93/pdf_viewer.min.css';
+    document.head.appendChild(textLayerCss);
+
+    // Cleanup function
+    return () => {
+      const existingScript = document.querySelector(`script[type="module"]`);
+      const existingCSS = document.querySelector(
+        `link[href*="pdf_viewer.min.css"]`
+      );
+      if (existingScript) document.head.removeChild(existingScript);
+      if (existingCSS) document.head.removeChild(existingCSS);
+      window.removeEventListener('pdfjsLoaded', handlePdfJsLoaded);
+    };
   }, []);
 
   const handleFileUpload = useCallback(
     async (file: File) => {
-      if (!file) return;
-
-      if (file.type !== 'application/pdf') {
-        setError('Please select a PDF file');
+      if (!file || file.type !== 'application/pdf') {
+        setError('Please select a valid PDF file.');
         return;
       }
 
       if (!pdfJsLoaded) {
-        setError('PDF library is still loading, please try again');
+        setError('PDF library is still loading, please try again shortly.');
         return;
       }
 
       setIsLoading(true);
       setError(null);
+      setPdfDoc(null);
       setPdfFile(file);
-      setAllPagesRendered(false);
-      setIsRendering(false); // Reset rendering flag
 
       try {
         const fileReader = new FileReader();
-        fileReader.onload = async function (e) {
+        fileReader.onload = async (e) => {
           if (!e.target?.result) {
-            setError('Failed to read file');
+            setError('Failed to read file.');
             setIsLoading(false);
             return;
           }
@@ -125,19 +212,12 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
           const pdf = await (window as any).pdfjsLib.getDocument(typedArray)
             .promise;
           setPdfDoc(pdf);
-          setTotalPages(pdf.numPages);
           setIsLoading(false);
         };
-
-        fileReader.onerror = () => {
-          setError('Failed to read file');
-          setIsLoading(false);
-        };
-
         fileReader.readAsArrayBuffer(file);
       } catch (err) {
         console.error('Error loading PDF:', err);
-        setError('Failed to load PDF file');
+        setError('Failed to load the PDF file. It might be corrupted.');
         setIsLoading(false);
       }
     },
@@ -147,548 +227,44 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
   const handleFileInputChange = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
-      if (file) {
-        handleFileUpload(file);
-      }
+      if (file) handleFileUpload(file);
     },
     [handleFileUpload]
   );
 
-  // Render a single page as clean HTML
-  const renderSinglePageAsHTML = useCallback(
-    async (pageNumber: number): Promise<HTMLElement> => {
-      if (!pdfDoc) {
-        throw new Error('No PDF document loaded');
-      }
-
-      console.log(`Starting to render page ${pageNumber}`);
-
-      try {
-        const page = await pdfDoc.getPage(pageNumber);
-        console.log(`Got page ${pageNumber}, getting viewport...`);
-
-        const viewport = page.getViewport({ scale });
-        console.log(
-          `Got viewport for page ${pageNumber}:`,
-          viewport.width,
-          'x',
-          viewport.height
-        );
-
-        const textContent = await page.getTextContent();
-        console.log(
-          `Got text content for page ${pageNumber}, items:`,
-          textContent.items.length
-        );
-
-        // Create page container with improved styling
-        const pageContainer = document.createElement('div');
-        pageContainer.className = 'pdf-page';
-        pageContainer.style.cssText = `
-          position: relative;
-          width: ${viewport.width}px;
-          height: ${viewport.height}px;
-          margin: 0 auto 30px auto;
-          background: white;
-          box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-          border: 1px solid #d1d5db;
-          overflow: visible;
-          user-select: text;
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-          page-break-after: always;
-          cursor: text;
-        `;
-
-        // Add page number indicator with better styling
-        const pageLabel = document.createElement('div');
-        pageLabel.textContent = `Page ${pageNumber}`;
-        pageLabel.style.cssText = `
-          position: absolute;
-          top: -35px;
-          left: 50%;
-          transform: translateX(-50%);
-          font-size: 11px;
-          color: #6b7280;
-          background: #f9fafb;
-          padding: 3px 8px;
-          border-radius: 12px;
-          font-weight: 500;
-          border: 1px solid #e5e7eb;
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        `;
-        pageContainer.appendChild(pageLabel);
-
-        // Create text layer with better positioning
-        const textLayer = document.createElement('div');
-        textLayer.style.cssText = `
-          position: absolute;
-          top: 0;
-          left: 0;
-          width: 100%;
-          height: 100%;
-          z-index: 2;
-          pointer-events: auto;
-          overflow: visible;
-        `;
-
-        let processedItems = 0;
-
-        // Process text items and create HTML elements with improved positioning
-        textContent.items.forEach((item: any, index: number) => {
-          if (!item.str || !item.str.trim()) return;
-
-          const textElement = document.createElement('div');
-          textElement.textContent = item.str;
-          textElement.className = 'pdf-text-element';
-          textElement.dataset.pageNumber = pageNumber.toString();
-          textElement.dataset.textIndex = index.toString();
-
-          // Calculate position and size from transform matrix
-          const transform = item.transform;
-          const x = transform[4];
-          const y = transform[5];
-          const scaleX = Math.abs(transform[0]);
-          const scaleY = Math.abs(transform[3]);
-
-          // More accurate font size calculation
-          const fontSize = Math.max(scaleY, 6);
-
-          // Calculate proper Y position (PDF coordinates are bottom-up)
-          const adjustedY = viewport.height - y - fontSize;
-
-          // Detect if text should be on same line (similar Y coordinates)
-          const tolerance = fontSize * 0.3;
-          let shouldGroup = false;
-
-          // Check if this text item should be grouped with previous items
-          const existingElements =
-            textLayer.querySelectorAll('.pdf-text-element');
-          if (existingElements.length > 0) {
-            const lastElement = existingElements[
-              existingElements.length - 1
-            ] as HTMLElement;
-            const lastY = parseFloat(lastElement.style.top);
-            const lastX = parseFloat(lastElement.style.left);
-            const lastWidth =
-              lastElement.offsetWidth ||
-              parseFloat(lastElement.style.width || '0');
-
-            // If Y positions are similar and X position follows logically
-            if (Math.abs(adjustedY - lastY) <= tolerance && x >= lastX) {
-              shouldGroup = true;
-            }
-          }
-
-          textElement.style.cssText = `
-            position: absolute;
-            left: ${x}px;
-            top: ${adjustedY}px;
-            font-size: ${fontSize}px;
-            font-family: ${item.fontName || 'Arial, sans-serif'};
-            line-height: 1.2;
-            white-space: nowrap;
-            cursor: text;
-            user-select: text;
-            color: #000;
-            transform-origin: left top;
-            ${scaleX !== scaleY ? `transform: scaleX(${scaleX / scaleY});` : ''}
-            background: transparent;
-            border: none;
-            margin: 0;
-            padding: 1px 2px;
-            border-radius: 2px;
-            transition: background-color 0.2s ease;
-            z-index: ${shouldGroup ? 10 : 5};
-          `;
-
-          // Improved hover effects with better visual feedback
-          textElement.addEventListener('mouseenter', () => {
-            textElement.style.backgroundColor = 'rgba(59, 130, 246, 0.15)';
-            textElement.style.outline = '1px solid rgba(59, 130, 246, 0.4)';
-            textElement.style.zIndex = '20';
-          });
-
-          textElement.addEventListener('mouseleave', () => {
-            if (!textElement.classList.contains('selected')) {
-              textElement.style.backgroundColor = 'transparent';
-              textElement.style.outline = 'none';
-              textElement.style.zIndex = shouldGroup ? '10' : '5';
-            }
-          });
-
-          // Enhanced click selection with better visual feedback
-          textElement.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-
-            // Remove selection from other elements on this page
-            const allTextElements =
-              pageContainer.querySelectorAll('.pdf-text-element');
-            allTextElements.forEach((el) => {
-              el.classList.remove('selected');
-              if (el !== textElement) {
-                (el as HTMLElement).style.backgroundColor = 'transparent';
-                (el as HTMLElement).style.outline = 'none';
-                (el as HTMLElement).style.zIndex = '5';
-              }
-            });
-
-            // Select current element with enhanced styling
-            textElement.classList.add('selected');
-            textElement.style.backgroundColor = 'rgba(59, 130, 246, 0.25)';
-            textElement.style.outline = '2px solid rgba(59, 130, 246, 0.6)';
-            textElement.style.zIndex = '30';
-
-            // Select the text content
-            const selection = window.getSelection();
-            const range = document.createRange();
-            range.selectNodeContents(textElement);
-            selection?.removeAllRanges();
-            selection?.addRange(range);
-          });
-
-          // Add double-click to select word/phrase
-          textElement.addEventListener('dblclick', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-
-            // Find nearby text elements that might be part of the same line/phrase
-            const allElements = Array.from(
-              textLayer.querySelectorAll('.pdf-text-element')
-            ) as HTMLElement[];
-            const currentY = adjustedY;
-            const currentX = x;
-
-            // Find elements on the same line
-            const sameLineElements = allElements
-              .filter((el) => {
-                const elY = parseFloat(el.style.top);
-                const elX = parseFloat(el.style.left);
-                return (
-                  Math.abs(elY - currentY) <= tolerance &&
-                  Math.abs(elX - currentX) <= fontSize * 10
-                ); // Within reasonable distance
-              })
-              .sort(
-                (a, b) => parseFloat(a.style.left) - parseFloat(b.style.left)
-              );
-
-            // Select all elements in the line
-            sameLineElements.forEach((el) => {
-              el.classList.add('selected');
-              el.style.backgroundColor = 'rgba(59, 130, 246, 0.25)';
-              el.style.outline = '2px solid rgba(59, 130, 246, 0.6)';
-            });
-          });
-
-          textLayer.appendChild(textElement);
-          processedItems++;
-        });
-
-        pageContainer.appendChild(textLayer);
-
-        console.log(
-          `Page ${pageNumber} rendered successfully with ${processedItems} text elements`
-        );
-        return pageContainer;
-      } catch (error) {
-        console.error(
-          `Error in renderSinglePageAsHTML for page ${pageNumber}:`,
-          error
-        );
-        throw error;
-      }
-    },
-    [pdfDoc, scale]
-  );
-
-  // Render all pages in scrollable format
-  const renderAllPages = useCallback(async () => {
-    if (!pdfDoc || !containerRef.current) {
-      console.log('Missing pdfDoc or containerRef');
-      return;
+  const handleDragDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      handleFileUpload(e.dataTransfer.files[0]);
     }
-
-    if (isRendering) {
-      console.log('Already rendering, skipping...');
-      return;
-    }
-
-    console.log('Starting to render', totalPages, 'pages');
-    setIsRendering(true);
-
-    try {
-      containerRef.current.innerHTML = '';
-      setAllPagesRendered(false);
-
-      // Add CSS for loading animation if not already present
-      if (!document.head.querySelector('style[data-pdf-viewer]')) {
-        const style = document.createElement('style');
-        style.setAttribute('data-pdf-viewer', 'true');
-        style.textContent = `
-          @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-          }
-        `;
-        document.head.appendChild(style);
-      }
-
-      // Create container for all pages
-      const pagesContainer = document.createElement('div');
-      pagesContainer.style.cssText = `
-        width: 100%;
-        min-height: 100%;
-      `;
-
-      // Create loading indicator
-      const loadingDiv = document.createElement('div');
-      loadingDiv.id = 'pdf-loading';
-      loadingDiv.innerHTML = `
-        <div style="text-align: center; padding: 40px; color: #666;">
-          <div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-          <p style="margin-top: 16px;">Starting to render pages...</p>
-        </div>
-      `;
-
-      containerRef.current.appendChild(loadingDiv);
-
-      // Render pages one by one and append immediately
-      for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
-        console.log(`Rendering page ${pageNum}`);
-
-        // Update loading message
-        const loadingIndicator = document.getElementById('pdf-loading');
-        if (loadingIndicator) {
-          loadingIndicator.innerHTML = `
-            <div style="text-align: center; padding: 40px; color: #666;">
-              <div style="display: inline-block; width: 32px; height: 32px; border: 3px solid #f3f3f3; border-top: 3px solid #3498db; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-              <p style="margin-top: 16px;">Rendering page ${pageNum} of ${totalPages}...</p>
-            </div>
-          `;
-        }
-
-        try {
-          const pageElement = await renderSinglePageAsHTML(pageNum);
-          pagesContainer.appendChild(pageElement);
-          console.log(`Page ${pageNum} rendered successfully`);
-
-          // If this is the first page, replace loading with pages container
-          if (pageNum === 1) {
-            containerRef.current.innerHTML = '';
-            containerRef.current.appendChild(pagesContainer);
-
-            // Add a small loading indicator at the bottom for remaining pages
-            const bottomLoading = document.createElement('div');
-            bottomLoading.id = 'bottom-loading';
-            bottomLoading.innerHTML = `
-              <div style="text-align: center; padding: 20px; color: #666; font-size: 14px;">
-                Loading remaining pages... (${pageNum}/${totalPages})
-              </div>
-            `;
-            pagesContainer.appendChild(bottomLoading);
-          } else {
-            // Update bottom loading indicator
-            const bottomLoading = document.getElementById('bottom-loading');
-            if (bottomLoading) {
-              if (pageNum === totalPages) {
-                bottomLoading.remove();
-              } else {
-                bottomLoading.innerHTML = `
-                  <div style="text-align: center; padding: 20px; color: #666; font-size: 14px;">
-                    Loading remaining pages... (${pageNum}/${totalPages})
-                  </div>
-                `;
-              }
-            }
-          }
-        } catch (error: any) {
-          console.error(`Error rendering page ${pageNum}:`, error);
-
-          // Create error placeholder
-          const errorPage = document.createElement('div');
-          errorPage.style.cssText = `
-            width: 800px;
-            height: 200px;
-            margin: 0 auto 40px auto;
-            background: #fee;
-            border: 1px solid #fcc;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #c33;
-            font-family: Arial, sans-serif;
-            border-radius: 8px;
-          `;
-          errorPage.innerHTML = `
-            <div style="text-align: center;">
-              <p>Error rendering page ${pageNum}</p>
-              <p style="font-size: 12px; margin-top: 8px;">${
-                error.message || 'Unknown error'
-              }</p>
-            </div>
-          `;
-          pagesContainer.appendChild(errorPage);
-        }
-
-        // Add a small delay to prevent browser freezing
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-
-      console.log('All pages rendered successfully');
-      setAllPagesRendered(true);
-    } catch (err: any) {
-      console.error('Error in renderAllPages:', err);
-      setError(`Failed to render PDF pages: ${err.message || 'Unknown error'}`);
-
-      // Show error in container
-      if (containerRef.current) {
-        containerRef.current.innerHTML = `
-          <div style="text-align: center; padding: 40px; color: #c33;">
-            <h3>Error Loading PDF</h3>
-            <p>${err.message || 'Unknown error occurred'}</p>
-            <p style="font-size: 12px; margin-top: 16px;">Check console for more details</p>
-          </div>
-        `;
-      }
-    } finally {
-      setIsRendering(false);
-    }
-  }, [pdfDoc, totalPages, isRendering]);
-
-  // Trigger rendering when PDF is loaded (without renderAllPages in dependencies)
-  useEffect(() => {
-    if (pdfDoc && totalPages > 0 && !allPagesRendered) {
-      console.log('PDF loaded, starting initial render');
-      renderAllPages();
-    }
-  }, [pdfDoc, totalPages]); // Removed renderAllPages from dependencies
-
-  // Re-render when scale changes (simplified)
-  useEffect(() => {
-    if (pdfDoc && allPagesRendered && scale !== 1.2) {
-      console.log('Scale changed, re-rendering');
-      setAllPagesRendered(false); // Reset flag first
-      setTimeout(() => renderAllPages(), 100); // Small delay to prevent race condition
-    }
-  }, [scale]); // Only depend on scale
+  };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
   };
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      const file = files[0];
-      if (file.type === 'application/pdf') {
-        handleFileUpload(file);
-      } else {
-        setError('Please drop a PDF file');
-      }
-    }
-  };
-
-  const zoomIn = () => {
-    setScale((prev) => Math.min(prev + 0.2, 3));
-  };
-
-  const zoomOut = () => {
-    setScale((prev) => Math.max(prev - 0.2, 0.3));
-  };
-
-  const resetZoom = () => {
-    setScale(1.2);
-  };
-
-  // Convert current view to image for download
-  const downloadAsImage = useCallback(async () => {
-    if (!pdfDoc || !containerRef.current) return;
-
-    try {
-      setIsConverting(true);
-
-      // Create a high-resolution canvas for the first page as example
-      const page = await pdfDoc.getPage(1);
-      const viewport = page.getViewport({ scale: 2 }); // High resolution
-      const canvas = document.createElement('canvas');
-      const context = canvas.getContext('2d');
-
-      if (!context) {
-        setError('Failed to get canvas context');
-        return;
-      }
-
-      canvas.height = viewport.height;
-      canvas.width = viewport.width;
-
-      const renderContext = {
-        canvasContext: context,
-        viewport: viewport,
-      };
-
-      // Type assertion to handle PDF.js types
-      await (page as any).render(renderContext).promise;
-
-      canvas.toBlob(
-        (blob) => {
-          if (blob) {
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `${
-              pdfFile?.name?.replace('.pdf', '') || 'document'
-            }.${conversionFormat}`;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            URL.revokeObjectURL(url);
-          }
-        },
-        `image/${conversionFormat}`,
-        conversionFormat === 'jpeg' ? 0.92 : undefined
-      );
-    } catch (error) {
-      console.error('Error converting to image:', error);
-      setError('Failed to convert to image');
-    } finally {
-      setIsConverting(false);
-    }
-  }, [pdfDoc, pdfFile?.name, conversionFormat]);
+  const zoomIn = () => setScale((prev) => Math.min(prev + 0.2, 3.0));
+  const zoomOut = () => setScale((prev) => Math.max(prev - 0.2, 0.4));
+  const resetZoom = () => setScale(1.5);
 
   return (
-    <div className='flex h-screen bg-gray-100'>
-      {/* Left Panel - Controls (25%) */}
-      <div className='w-[25%] bg-white border-r border-gray-300 p-6 flex flex-col overflow-y-auto'>
-        <h2 className='text-2xl font-bold mb-6 text-gray-800'>
+    <div className='flex h-screen bg-gray-100 font-sans'>
+      {/* --- Left Control Panel --- */}
+      <aside className='w-[25%] max-w-sm bg-white border-r border-gray-200 p-6 flex flex-col shadow-md'>
+        <h1 className='text-2xl font-bold mb-6 text-gray-800'>
           HTML PDF Viewer
-        </h2>
+        </h1>
 
-        {/* Upload Area */}
         <div
-          className='border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-500 transition-colors cursor-pointer mb-6'
+          className='border-2 border-dashed border-gray-300 rounded-xl p-6 text-center hover:border-blue-500 transition-colors cursor-pointer mb-6 bg-gray-50'
           onDragOver={handleDragOver}
-          onDrop={handleDrop}
+          onDrop={handleDragDrop}
           onClick={() => fileInputRef.current?.click()}
         >
-          <div className='text-gray-500'>
-            <svg
-              className='w-10 h-10 mx-auto mb-3'
-              fill='none'
-              stroke='currentColor'
-              viewBox='0 0 24 24'
-            >
-              <path
-                strokeLinecap='round'
-                strokeLinejoin='round'
-                strokeWidth={2}
-                d='M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12'
-              />
-            </svg>
-            <p className='text-lg mb-2'>Upload PDF</p>
-            <p className='text-sm'>Click or drag & drop</p>
-          </div>
+          <p className='text-lg mb-2 font-semibold text-gray-700'>Upload PDF</p>
+          <p className='text-sm text-gray-500'>Click or Drag & Drop</p>
           <input
             ref={fileInputRef}
             type='file'
@@ -698,140 +274,88 @@ const HTMLPDFViewer: React.FC<PDFViewerProps> = () => {
           />
         </div>
 
-        {/* File Info */}
         {pdfFile && (
-          <div className='bg-gray-50 p-4 rounded-lg mb-6'>
-            <h3 className='font-semibold text-gray-800 mb-2'>Current File:</h3>
-            <p className='text-sm text-gray-600 break-all'>{pdfFile.name}</p>
-            <p className='text-xs text-gray-500 mt-1'>
-              {(pdfFile.size / 1024 / 1024).toFixed(2)} MB • {totalPages} pages
-            </p>
+          <div className='bg-blue-50 p-4 rounded-lg mb-6 border border-blue-200'>
+            <h3 className='font-semibold text-blue-900 mb-2'>Current File:</h3>
+            <p className='text-sm text-blue-800 break-all'>{pdfFile.name}</p>
+            {pdfDoc && (
+              <p className='text-xs text-blue-600 mt-1'>
+                {pdfDoc.numPages} {pdfDoc.numPages > 1 ? 'pages' : 'page'}
+              </p>
+            )}
           </div>
         )}
 
-        {/* Controls */}
         {pdfDoc && (
-          <div className='space-y-4'>
-            <div className='flex items-center justify-between'>
-              <span className='text-sm text-gray-600'>Zoom:</span>
-              <span className='text-sm font-medium'>
-                {Math.round(scale * 100)}%
-              </span>
-            </div>
-
-            <div className='grid grid-cols-3 gap-2'>
-              <button
-                onClick={zoomOut}
-                className='px-3 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors text-sm'
-              >
-                -
-              </button>
-              <button
-                onClick={resetZoom}
-                className='px-3 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors text-sm'
-              >
-                Reset
-              </button>
-              <button
-                onClick={zoomIn}
-                className='px-3 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors text-sm'
-              >
-                +
-              </button>
-            </div>
-
-            {/* Export Options */}
-            <div className='border-t pt-4 space-y-3'>
-              <h3 className='font-semibold text-gray-800'>Export</h3>
-
-              <div className='space-y-2'>
-                <label className='text-sm text-gray-600'>Format:</label>
-                <select
-                  value={conversionFormat}
-                  onChange={(e) =>
-                    setConversionFormat(e.target.value as 'png' | 'jpeg')
-                  }
-                  className='w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm'
+          <div className='space-y-6'>
+            {/* --- Zoom Controls --- */}
+            <div>
+              <div className='flex items-center justify-between mb-2'>
+                <label className='text-sm font-medium text-gray-600'>
+                  Zoom
+                </label>
+                <span className='text-sm font-bold text-gray-800'>
+                  {Math.round(scale * 100)}%
+                </span>
+              </div>
+              <div className='grid grid-cols-3 gap-2'>
+                <button
+                  onClick={zoomOut}
+                  className='p-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition'
                 >
-                  <option value='png'>PNG</option>
-                  <option value='jpeg'>JPEG</option>
-                </select>
+                  -
+                </button>
+                <button
+                  onClick={resetZoom}
+                  className='p-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition text-sm'
+                >
+                  Reset
+                </button>
+                <button
+                  onClick={zoomIn}
+                  className='p-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition'
+                >
+                  +
+                </button>
               </div>
-
-              <button
-                onClick={downloadAsImage}
-                disabled={isConverting}
-                className='w-full px-3 py-2 bg-green-500 text-white rounded disabled:bg-gray-300 hover:bg-green-600 transition-colors text-sm'
-              >
-                {isConverting ? 'Converting...' : 'Download as Image'}
-              </button>
-            </div>
-
-            {/* Instructions */}
-            <div className='border-t pt-4 space-y-2'>
-              <h3 className='font-semibold text-gray-800 text-sm'>
-                How to use:
-              </h3>
-              <ul className='text-xs text-gray-600 space-y-1'>
-                <li>• Scroll to navigate through pages</li>
-                <li>• Hover over text to highlight</li>
-                <li>• Click to select entire text element</li>
-                <li>• Use Ctrl+A to select all text</li>
-                <li>• Copy selected text with Ctrl+C</li>
-              </ul>
             </div>
           </div>
         )}
 
-        {/* Error Display */}
         {error && (
-          <div className='bg-red-50 border border-red-200 rounded-lg p-4 mt-4'>
-            <p className='text-red-800 text-sm'>{error}</p>
+          <div className='bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg mt-4 text-sm'>
+            <p>{error}</p>
           </div>
         )}
-      </div>
+      </aside>
 
-      {/* Right Panel - PDF Display (75%) */}
-      <div className='w-[75%] bg-gray-50 flex flex-col'>
-        <div className='flex-1 overflow-y-auto p-6'>
+      {/* --- Right PDF Display Panel --- */}
+      <main className='w-[75%] bg-gray-200 overflow-y-auto p-8'>
+        <div className='flex flex-col items-center w-full'>
           {isLoading && (
-            <div className='flex items-center justify-center h-full'>
-              <div className='text-center'>
-                <div className='animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4'></div>
-                <p className='text-gray-600'>Loading PDF...</p>
-              </div>
-            </div>
+            <div className='text-lg text-gray-600'>Loading PDF...</div>
           )}
 
           {!pdfDoc && !isLoading && (
-            <div className='flex items-center justify-center h-full'>
-              <div className='text-center text-gray-500'>
-                <svg
-                  className='w-16 h-16 mx-auto mb-4'
-                  fill='none'
-                  stroke='currentColor'
-                  viewBox='0 0 24 24'
-                >
-                  <path
-                    strokeLinecap='round'
-                    strokeLinejoin='round'
-                    strokeWidth={2}
-                    d='M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z'
-                  />
-                </svg>
-                <p className='text-lg'>No PDF loaded</p>
-                <p className='text-sm'>Upload a PDF file to get started</p>
+            <div className='flex items-center justify-center h-full w-full text-center text-gray-500'>
+              <div>
+                <h2 className='text-xl font-semibold'>No PDF Loaded</h2>
+                <p>Please upload a file to begin viewing.</p>
               </div>
             </div>
           )}
 
-          <div
-            ref={containerRef}
-            className='min-h-full'
-            style={{ userSelect: 'text' }}
-          />
+          {pdfDoc &&
+            Array.from(new Array(pdfDoc.numPages), (_, i) => (
+              <PDFPage
+                key={`page_${i + 1}`}
+                pdfDoc={pdfDoc}
+                pageNumber={i + 1}
+                scale={scale}
+              />
+            ))}
         </div>
-      </div>
+      </main>
     </div>
   );
 };

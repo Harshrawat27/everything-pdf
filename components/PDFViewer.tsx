@@ -14,12 +14,7 @@ const options = {
   standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/standard_fonts/`,
 };
 
-// Type definitions
-interface PDFFile extends File {
-  type: 'application/pdf';
-}
-
-// Custom PDF Page Component
+// Custom PDF Page Component with hover and selection
 const PDFPageComponent = ({
   pageNumber,
   scale,
@@ -30,6 +25,7 @@ const PDFPageComponent = ({
   containerWidth: number;
 }) => {
   const [pageWidth, setPageWidth] = useState<number | null>(null);
+  const pageRef = useRef<HTMLDivElement>(null);
 
   // Calculate responsive scale
   const calculateScale = useCallback(() => {
@@ -45,8 +41,253 @@ const PDFPageComponent = ({
     setPageWidth(viewport.width);
   }, []);
 
+  // Add hover and selection functionality after page loads
+  useEffect(() => {
+    const pageElement = pageRef.current;
+    if (!pageElement) return;
+
+    const setupTextInteractions = () => {
+      // Find all text elements in the text layer
+      const textLayer = pageElement.querySelector(
+        '.react-pdf__Page__textContent'
+      );
+      if (!textLayer) return;
+
+      const textElements = textLayer.querySelectorAll('span');
+
+      // Group spans into paragraphs based on their vertical position
+      const paragraphs = groupSpansIntoParagraphs(textElements);
+
+      // Create paragraph wrappers and add interactions
+      paragraphs.forEach((spanGroup, index) => {
+        // Create a wrapper div for the paragraph
+        const paragraphWrapper = document.createElement('div');
+        paragraphWrapper.className = 'pdf-paragraph-wrapper';
+        paragraphWrapper.style.position = 'absolute';
+        paragraphWrapper.style.cursor = 'text';
+        paragraphWrapper.style.transition = 'all 0.2s ease-in-out';
+        paragraphWrapper.style.borderRadius = '4px';
+        paragraphWrapper.style.padding = '2px 4px';
+        paragraphWrapper.style.margin = '1px';
+        paragraphWrapper.style.zIndex = '10';
+        paragraphWrapper.style.pointerEvents = 'auto';
+
+        // Calculate bounding box for the paragraph
+        const bounds = calculateParagraphBounds(spanGroup);
+        paragraphWrapper.style.left = `${bounds.left}px`;
+        paragraphWrapper.style.top = `${bounds.top}px`;
+        paragraphWrapper.style.width = `${bounds.width}px`;
+        paragraphWrapper.style.height = `${bounds.height}px`;
+
+        // Mouse enter event
+        const handleMouseEnter = () => {
+          paragraphWrapper.style.backgroundColor = 'rgba(59, 130, 246, 0.1)';
+          paragraphWrapper.style.transform = 'scale(1.01)';
+          paragraphWrapper.style.boxShadow =
+            '0 2px 8px rgba(59, 130, 246, 0.2)';
+
+          // Highlight all spans in this paragraph
+          spanGroup.forEach((span) => {
+            span.style.backgroundColor = 'rgba(59, 130, 246, 0.05)';
+          });
+        };
+
+        // Mouse leave event
+        const handleMouseLeave = () => {
+          if (!paragraphWrapper.classList.contains('selected-paragraph')) {
+            paragraphWrapper.style.backgroundColor = 'transparent';
+            paragraphWrapper.style.transform = 'scale(1)';
+            paragraphWrapper.style.boxShadow = 'none';
+
+            // Remove highlight from spans
+            spanGroup.forEach((span) => {
+              span.style.backgroundColor = 'transparent';
+            });
+          }
+        };
+
+        // Click event for selection
+        const handleClick = (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+
+          // Remove selection from all other paragraphs
+          const allParagraphWrappers = textLayer.querySelectorAll(
+            '.pdf-paragraph-wrapper'
+          );
+          allParagraphWrappers.forEach((wrapper) => {
+            if (wrapper !== paragraphWrapper) {
+              wrapper.classList.remove('selected-paragraph');
+              (wrapper as HTMLElement).style.backgroundColor = 'transparent';
+              (wrapper as HTMLElement).style.transform = 'scale(1)';
+              (wrapper as HTMLElement).style.boxShadow = 'none';
+            }
+          });
+
+          // Remove highlight from all spans
+          textElements.forEach((span) => {
+            span.style.backgroundColor = 'transparent';
+          });
+
+          // Toggle selection on clicked paragraph
+          const isSelected =
+            paragraphWrapper.classList.contains('selected-paragraph');
+
+          if (isSelected) {
+            paragraphWrapper.classList.remove('selected-paragraph');
+            paragraphWrapper.style.backgroundColor = 'transparent';
+            paragraphWrapper.style.transform = 'scale(1)';
+            paragraphWrapper.style.boxShadow = 'none';
+
+            spanGroup.forEach((span) => {
+              span.style.backgroundColor = 'transparent';
+            });
+
+            window.getSelection()?.removeAllRanges();
+          } else {
+            paragraphWrapper.classList.add('selected-paragraph');
+            paragraphWrapper.style.backgroundColor = 'rgba(59, 130, 246, 0.2)';
+            paragraphWrapper.style.transform = 'scale(1.01)';
+            paragraphWrapper.style.boxShadow =
+              '0 3px 12px rgba(59, 130, 246, 0.3)';
+
+            // Highlight all spans in the selected paragraph
+            spanGroup.forEach((span) => {
+              span.style.backgroundColor = 'rgba(59, 130, 246, 0.15)';
+            });
+
+            // Select all text in the paragraph
+            const selection = window.getSelection();
+            selection?.removeAllRanges();
+
+            if (spanGroup.length > 0) {
+              const range = document.createRange();
+              range.setStartBefore(spanGroup[0]);
+              range.setEndAfter(spanGroup[spanGroup.length - 1]);
+              selection?.addRange(range);
+            }
+          }
+        };
+
+        // Add event listeners
+        paragraphWrapper.addEventListener('mouseenter', handleMouseEnter);
+        paragraphWrapper.addEventListener('mouseleave', handleMouseLeave);
+        paragraphWrapper.addEventListener('click', handleClick);
+
+        // Store cleanup function
+        (paragraphWrapper as any)._cleanup = () => {
+          paragraphWrapper.removeEventListener('mouseenter', handleMouseEnter);
+          paragraphWrapper.removeEventListener('mouseleave', handleMouseLeave);
+          paragraphWrapper.removeEventListener('click', handleClick);
+        };
+
+        // Insert the wrapper into the text layer
+        textLayer.appendChild(paragraphWrapper);
+      });
+    };
+
+    // Helper function to group spans into paragraphs
+    const groupSpansIntoParagraphs = (spans: NodeListOf<Element>) => {
+      const spansArray = Array.from(spans) as HTMLElement[];
+      const paragraphs: HTMLElement[][] = [];
+
+      if (spansArray.length === 0) return paragraphs;
+
+      // Sort spans by their vertical position (top), then horizontal position (left)
+      spansArray.sort((a, b) => {
+        const aRect = a.getBoundingClientRect();
+        const bRect = b.getBoundingClientRect();
+
+        // If they're on roughly the same line (within 10px), sort by left position
+        if (Math.abs(aRect.top - bRect.top) < 10) {
+          return aRect.left - bRect.left;
+        }
+
+        return aRect.top - bRect.top;
+      });
+
+      let currentParagraph: HTMLElement[] = [spansArray[0]];
+      let lastBottom = spansArray[0].getBoundingClientRect().bottom;
+
+      for (let i = 1; i < spansArray.length; i++) {
+        const span = spansArray[i];
+        const rect = span.getBoundingClientRect();
+
+        // If there's a significant vertical gap (more than 1.5x line height), start a new paragraph
+        const lineHeight = rect.height;
+        const gap = rect.top - lastBottom;
+
+        if (gap > lineHeight * 0.8) {
+          // Start new paragraph
+          paragraphs.push(currentParagraph);
+          currentParagraph = [span];
+        } else {
+          // Add to current paragraph
+          currentParagraph.push(span);
+        }
+
+        lastBottom = Math.max(lastBottom, rect.bottom);
+      }
+
+      // Don't forget the last paragraph
+      if (currentParagraph.length > 0) {
+        paragraphs.push(currentParagraph);
+      }
+
+      return paragraphs;
+    };
+
+    // Helper function to calculate paragraph bounds
+    const calculateParagraphBounds = (spans: HTMLElement[]) => {
+      if (spans.length === 0) return { left: 0, top: 0, width: 0, height: 0 };
+
+      const rects = spans.map((span) => span.getBoundingClientRect());
+      const containerRect = pageRef.current?.getBoundingClientRect();
+
+      if (!containerRect) return { left: 0, top: 0, width: 0, height: 0 };
+
+      const left = Math.min(...rects.map((r) => r.left)) - containerRect.left;
+      const top = Math.min(...rects.map((r) => r.top)) - containerRect.top;
+      const right = Math.max(...rects.map((r) => r.right)) - containerRect.left;
+      const bottom =
+        Math.max(...rects.map((r) => r.bottom)) - containerRect.top;
+
+      return {
+        left: left - 4, // Add some padding
+        top: top - 2,
+        width: right - left + 8,
+        height: bottom - top + 4,
+      };
+    };
+
+    // Setup interactions after a short delay to ensure text layer is rendered
+    const timer = setTimeout(setupTextInteractions, 500);
+
+    return () => {
+      clearTimeout(timer);
+      // Cleanup event listeners and paragraph wrappers
+      const textLayer = pageElement.querySelector(
+        '.react-pdf__Page__textContent'
+      );
+      if (textLayer) {
+        const paragraphWrappers = textLayer.querySelectorAll(
+          '.pdf-paragraph-wrapper'
+        );
+        paragraphWrappers.forEach((wrapper) => {
+          if ((wrapper as any)._cleanup) {
+            (wrapper as any)._cleanup();
+          }
+          wrapper.remove();
+        });
+      }
+    };
+  }, [pageNumber, scale]); // Re-run when page or scale changes
+
   return (
-    <div className='pdf-page-wrapper mb-4 md:mb-8 mx-auto max-w-full'>
+    <div
+      ref={pageRef}
+      className='pdf-page-wrapper mb-4 md:mb-8 mx-auto max-w-full'
+    >
       <Page
         pageNumber={pageNumber}
         scale={calculateScale()}
@@ -71,7 +312,6 @@ const ReactPDFViewer: React.FC = () => {
   const [isMobile, setIsMobile] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const [searchText, setSearchText] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mainContentRef = useRef<HTMLDivElement>(null);
 
@@ -107,6 +347,44 @@ const ReactPDFViewer: React.FC = () => {
 
     return () => clearTimeout(timer);
   }, [sidebarOpen]);
+
+  // Add global click handler to deselect paragraphs when clicking outside
+  useEffect(() => {
+    const handleGlobalClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+
+      // Check if click is outside of paragraph wrappers
+      if (
+        !target.closest('.pdf-paragraph-wrapper') &&
+        !target.closest('.react-pdf__Page__textContent')
+      ) {
+        // Remove selection from all paragraph wrappers
+        const allParagraphWrappers = document.querySelectorAll(
+          '.pdf-paragraph-wrapper.selected-paragraph'
+        );
+        allParagraphWrappers.forEach((wrapper) => {
+          wrapper.classList.remove('selected-paragraph');
+          (wrapper as HTMLElement).style.backgroundColor = 'transparent';
+          (wrapper as HTMLElement).style.transform = 'scale(1)';
+          (wrapper as HTMLElement).style.boxShadow = 'none';
+        });
+
+        // Remove highlight from all text spans
+        const allTextSpans = document.querySelectorAll(
+          '.react-pdf__Page__textContent span'
+        );
+        allTextSpans.forEach((span) => {
+          (span as HTMLElement).style.backgroundColor = 'transparent';
+        });
+
+        // Clear browser selection
+        window.getSelection()?.removeAllRanges();
+      }
+    };
+
+    document.addEventListener('click', handleGlobalClick);
+    return () => document.removeEventListener('click', handleGlobalClick);
+  }, []);
 
   const onDocumentLoadSuccess = useCallback(
     ({ numPages }: { numPages: number }) => {
@@ -207,7 +485,7 @@ const ReactPDFViewer: React.FC = () => {
         {/* Desktop title */}
         {!isMobile && (
           <h1 className='text-2xl font-bold mb-6 text-gray-800'>
-            React-PDF Viewer
+            Interactive PDF Viewer
           </h1>
         )}
 
@@ -342,7 +620,8 @@ const ReactPDFViewer: React.FC = () => {
 
         {/* Features Info */}
         <div className='mt-auto pt-6 text-xs text-gray-500'>
-          <p className='mb-2'>✓ Text selection enabled</p>
+          <p className='mb-2'>✓ Interactive hover effects</p>
+          <p className='mb-2'>✓ Click to select text</p>
           <p className='mb-2'>✓ Responsive design</p>
           <p className='mb-2'>✓ Annotation support</p>
           <p>✓ High-quality rendering</p>
@@ -381,7 +660,7 @@ const ReactPDFViewer: React.FC = () => {
                   Upload a PDF file to begin viewing
                 </p>
                 <p className='text-xs mt-2 text-gray-400'>
-                  Supports text selection, annotations, and responsive viewing
+                  Hover over text to see animations, click to select
                 </p>
               </div>
             </div>

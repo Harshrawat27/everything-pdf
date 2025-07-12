@@ -32,8 +32,8 @@ interface OutlineItem {
   items?: OutlineItem[];
 }
 
-// Custom PDF Page Component
-const PDFPageComponent = ({
+// Individual PDF Page Component for scrollable view
+const ScrollablePDFPage = ({
   pageNumber,
   scale,
   containerWidth,
@@ -46,13 +46,11 @@ const PDFPageComponent = ({
 }) => {
   const [pageWidth, setPageWidth] = useState<number | null>(null);
 
-  // Calculate responsive scale
   const calculateScale = useCallback(() => {
     if (!pageWidth || !containerWidth) return scale;
-
-    const maxWidth = containerWidth - 32; // Account for padding
+    const maxWidth = containerWidth - 32;
     const responsiveScale = Math.min(scale, maxWidth / pageWidth);
-    return Math.max(responsiveScale, 0.3); // Minimum scale
+    return Math.max(responsiveScale, 0.3);
   }, [scale, pageWidth, containerWidth]);
 
   const handlePageLoadSuccess = useCallback(
@@ -65,16 +63,26 @@ const PDFPageComponent = ({
   );
 
   return (
-    <div className='pdf-page-wrapper mb-4 md:mb-8 mx-auto max-w-full'>
-      <Page
-        pageNumber={pageNumber}
-        scale={calculateScale()}
-        onLoadSuccess={handlePageLoadSuccess}
-        className='pdf-page shadow-lg border border-gray-200 mx-auto'
-        canvasBackground='white'
-        renderTextLayer={true}
-        renderAnnotationLayer={true}
-      />
+    <div
+      className='pdf-page-wrapper mb-6 mx-auto max-w-full'
+      id={`page-${pageNumber}`}
+    >
+      <div className='relative'>
+        {/* Page number indicator */}
+        <div className='absolute -top-6 left-0 text-sm text-gray-500 font-medium'>
+          Page {pageNumber}
+        </div>
+
+        <Page
+          pageNumber={pageNumber}
+          scale={calculateScale()}
+          onLoadSuccess={handlePageLoadSuccess}
+          className='pdf-page shadow-lg border border-gray-200 mx-auto bg-white'
+          canvasBackground='white'
+          renderTextLayer={true}
+          renderAnnotationLayer={true}
+        />
+      </div>
     </div>
   );
 };
@@ -127,8 +135,75 @@ const OutlineComponent = ({
   );
 };
 
-// Main PDF Viewer Component
-const ReactPDFViewer: React.FC = () => {
+// Page Navigation Component
+const PageNavigator = ({
+  numPages,
+  currentVisiblePage,
+  onPageClick,
+}: {
+  numPages: number;
+  currentVisiblePage: number;
+  onPageClick: (page: number) => void;
+}) => {
+  const getVisiblePages = () => {
+    const delta = 2;
+    const range = [];
+    const rangeWithDots = [];
+
+    for (
+      let i = Math.max(2, currentVisiblePage - delta);
+      i <= Math.min(numPages - 1, currentVisiblePage + delta);
+      i++
+    ) {
+      range.push(i);
+    }
+
+    if (currentVisiblePage - delta > 2) {
+      rangeWithDots.push(1, '...');
+    } else {
+      rangeWithDots.push(1);
+    }
+
+    rangeWithDots.push(...range);
+
+    if (currentVisiblePage + delta < numPages - 1) {
+      rangeWithDots.push('...', numPages);
+    } else if (numPages > 1) {
+      rangeWithDots.push(numPages);
+    }
+
+    return rangeWithDots;
+  };
+
+  return (
+    <div className='flex items-center justify-center space-x-1 flex-wrap'>
+      {getVisiblePages().map((page, index) => (
+        <button
+          key={index}
+          onClick={() =>
+            typeof page === 'number' ? onPageClick(page) : undefined
+          }
+          disabled={typeof page !== 'number'}
+          className={`
+            px-3 py-1 text-sm rounded transition-colors
+            ${
+              typeof page === 'number'
+                ? page === currentVisiblePage
+                  ? 'bg-blue-500 text-white'
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                : 'bg-transparent text-gray-400 cursor-default'
+            }
+          `}
+        >
+          {page}
+        </button>
+      ))}
+    </div>
+  );
+};
+
+// Main Scrollable PDF Viewer Component
+const ScrollablePDFViewer: React.FC = () => {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [numPages, setNumPages] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -137,7 +212,7 @@ const ReactPDFViewer: React.FC = () => {
   const [containerWidth, setContainerWidth] = useState(800);
   const [isMobile, setIsMobile] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [currentPage, setCurrentPage] = useState(1);
+  const [currentVisiblePage, setCurrentVisiblePage] = useState(1);
   const [outline, setOutline] = useState<OutlineItem[] | null>(null);
   const [activeTab, setActiveTab] = useState<'navigation' | 'outline'>(
     'navigation'
@@ -146,6 +221,37 @@ const ReactPDFViewer: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mainContentRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  // Intersection Observer to track visible pages
+  useEffect(() => {
+    if (!scrollContainerRef.current || !numPages) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visiblePages = entries
+          .filter((entry) => entry.isIntersecting)
+          .map((entry) => parseInt(entry.target.id.split('-')[1]))
+          .sort((a, b) => a - b);
+
+        if (visiblePages.length > 0) {
+          setCurrentVisiblePage(visiblePages[0]);
+        }
+      },
+      {
+        root: scrollContainerRef.current,
+        threshold: 0.5,
+        rootMargin: '-50px 0px -50px 0px',
+      }
+    );
+
+    // Observe all page elements
+    const pageElements =
+      scrollContainerRef.current.querySelectorAll('[id^="page-"]');
+    pageElements.forEach((el) => observer.observe(el));
+
+    return () => observer.disconnect();
+  }, [numPages]);
 
   // Check if mobile and update container width
   useEffect(() => {
@@ -160,12 +266,8 @@ const ReactPDFViewer: React.FC = () => {
     };
 
     checkMobile();
-    const handleResize = () => {
-      checkMobile();
-    };
-
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
   // Update container width when sidebar opens/closes
@@ -183,14 +285,13 @@ const ReactPDFViewer: React.FC = () => {
   const onDocumentLoadSuccess = useCallback(
     async ({ numPages }: { numPages: number }) => {
       setNumPages(numPages);
-      setCurrentPage(1);
+      setCurrentVisiblePage(1);
       setIsLoading(false);
       setError(null);
 
       // Get the PDF document proxy to access outline
       try {
         if (pdfFile) {
-          // Convert File to ArrayBuffer for pdfjs
           const arrayBuffer = await pdfFile.arrayBuffer();
           const doc = await pdfjs.getDocument(arrayBuffer).promise;
           setPdfDocument(doc);
@@ -198,10 +299,8 @@ const ReactPDFViewer: React.FC = () => {
           if (doc) {
             const outline = await doc.getOutline();
             if (outline) {
-              // Type assertion to handle the outline structure
               setOutline(outline as OutlineItem[]);
 
-              // If we have an outline, show the outline tab by default
               if (outline.length > 0) {
                 setActiveTab('outline');
               }
@@ -223,6 +322,18 @@ const ReactPDFViewer: React.FC = () => {
     setIsLoading(false);
   }, []);
 
+  // Scroll to specific page
+  const scrollToPage = useCallback((pageNumber: number) => {
+    const pageElement = document.getElementById(`page-${pageNumber}`);
+    if (pageElement && scrollContainerRef.current) {
+      pageElement.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+        inline: 'nearest',
+      });
+    }
+  }, []);
+
   // Handle internal link clicks
   const handleItemClick = useCallback(
     async (item: any) => {
@@ -231,24 +342,19 @@ const ReactPDFViewer: React.FC = () => {
       try {
         let targetPageNumber = null;
 
-        // Handle different types of destinations
         if (item.dest) {
           if (Array.isArray(item.dest)) {
-            // Direct destination array
             if (
               item.dest[0] &&
               typeof item.dest[0] === 'object' &&
               item.dest[0].num
             ) {
-              // Reference to a page object
               const pageRef = item.dest[0];
               targetPageNumber = (await pdfDocument.getPageIndex(pageRef)) + 1;
             } else if (typeof item.dest[0] === 'number') {
-              // Direct page number (0-based)
               targetPageNumber = item.dest[0] + 1;
             }
           } else if (typeof item.dest === 'string') {
-            // Named destination
             try {
               const namedDest = await pdfDocument.getDestination(item.dest);
               if (namedDest && namedDest[0]) {
@@ -270,36 +376,30 @@ const ReactPDFViewer: React.FC = () => {
           }
         }
 
-        // Navigate to the target page
         if (
           targetPageNumber &&
           targetPageNumber >= 1 &&
           targetPageNumber <= (numPages || 1)
         ) {
-          setCurrentPage(targetPageNumber);
+          scrollToPage(targetPageNumber);
 
-          // Close sidebar on mobile after navigation
           if (isMobile) {
             setSidebarOpen(false);
           }
-        } else {
-          console.warn('Could not determine target page for item:', item);
         }
       } catch (err) {
         console.error('Error handling item click:', err);
       }
     },
-    [pdfDocument, numPages, isMobile]
+    [pdfDocument, numPages, isMobile, scrollToPage]
   );
 
-  // Handle external URLs
   const handleExternalLink = useCallback((url: string) => {
     if (url.startsWith('http://') || url.startsWith('https://')) {
       window.open(url, '_blank', 'noopener,noreferrer');
     }
   }, []);
 
-  // Enhanced onItemClick handler for the Document component
   const onDocumentItemClick = useCallback(
     ({ dest, url }: { dest?: any; url?: string }) => {
       if (url) {
@@ -323,7 +423,7 @@ const ReactPDFViewer: React.FC = () => {
     setOutline(null);
     setPdfDocument(null);
     setPdfFile(file);
-    setCurrentPage(1);
+    setCurrentVisiblePage(1);
     setActiveTab('navigation');
   }, []);
 
@@ -355,21 +455,14 @@ const ReactPDFViewer: React.FC = () => {
   const zoomOut = () => setScale((prev) => Math.max(prev - 0.2, 0.3));
   const resetZoom = () => setScale(1.2);
 
-  const goToPage = (pageNum: number) => {
-    if (pageNum >= 1 && pageNum <= (numPages || 1)) {
-      setCurrentPage(pageNum);
-    }
-  };
-
-  const nextPage = () => goToPage(currentPage + 1);
-  const prevPage = () => goToPage(currentPage - 1);
-
   return (
     <div className='flex flex-col md:flex-row h-screen bg-gray-100 font-sans'>
       {/* Mobile Header */}
       {isMobile && (
         <header className='bg-white border-b border-gray-200 p-4 flex justify-between items-center md:hidden'>
-          <h1 className='text-xl font-bold text-gray-800'>PDF Viewer</h1>
+          <h1 className='text-xl font-bold text-gray-800'>
+            Scrollable PDF Viewer
+          </h1>
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
             className='p-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition'
@@ -394,7 +487,9 @@ const ReactPDFViewer: React.FC = () => {
       >
         {/* Desktop title */}
         {!isMobile && (
-          <h1 className='text-2xl font-bold mb-6 text-gray-800'>PDF Viewer</h1>
+          <h1 className='text-2xl font-bold mb-6 text-gray-800'>
+            Scrollable PDF Viewer
+          </h1>
         )}
 
         {/* Close button for mobile */}
@@ -440,6 +535,15 @@ const ReactPDFViewer: React.FC = () => {
           </div>
         )}
 
+        {/* Current Page Indicator */}
+        {numPages && (
+          <div className='bg-green-50 p-3 rounded-lg mb-4 border border-green-200'>
+            <div className='text-sm font-medium text-green-800'>
+              Currently Viewing: Page {currentVisiblePage} of {numPages}
+            </div>
+          </div>
+        )}
+
         {/* Tab Navigation */}
         {numPages && (
           <div className='mb-4'>
@@ -473,42 +577,60 @@ const ReactPDFViewer: React.FC = () => {
         {/* Tab Content */}
         {numPages && activeTab === 'navigation' && (
           <div className='space-y-4 mb-6'>
-            {/* Page Navigation */}
+            {/* Quick Navigation */}
             <div>
               <label className='text-sm font-medium text-gray-600 mb-2 block'>
-                Page Navigation
+                Quick Navigation
               </label>
-              <div className='flex items-center space-x-2 mb-3'>
+              <div className='grid grid-cols-2 gap-2 mb-3'>
                 <button
-                  onClick={prevPage}
-                  disabled={currentPage <= 1}
-                  className='p-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition disabled:opacity-50 disabled:cursor-not-allowed'
+                  onClick={() => scrollToPage(1)}
+                  className='p-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition text-sm'
                 >
-                  ←
+                  First Page
                 </button>
-                <span className='text-sm font-medium px-3 py-2 bg-gray-100 rounded'>
-                  {currentPage} / {numPages}
-                </span>
                 <button
-                  onClick={nextPage}
-                  disabled={currentPage >= numPages}
-                  className='p-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition disabled:opacity-50 disabled:cursor-not-allowed'
+                  onClick={() => scrollToPage(numPages)}
+                  className='p-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition text-sm'
                 >
-                  →
+                  Last Page
                 </button>
               </div>
 
-              {/* Page Jump */}
+              {/* Go to specific page */}
               <input
                 type='number'
                 min={1}
                 max={numPages}
-                value={currentPage}
-                onChange={(e) => goToPage(parseInt(e.target.value) || 1)}
-                className='w-full p-2 border border-gray-300 rounded text-center'
                 placeholder='Go to page...'
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter') {
+                    const page = parseInt((e.target as HTMLInputElement).value);
+                    if (page >= 1 && page <= numPages) {
+                      scrollToPage(page);
+                      (e.target as HTMLInputElement).value = '';
+                    }
+                  }
+                }}
+                className='w-full p-2 border border-gray-300 rounded text-center'
               />
             </div>
+
+            {/* Page Navigator */}
+            {numPages > 1 && (
+              <div>
+                <label className='text-sm font-medium text-gray-600 mb-2 block'>
+                  Page Overview
+                </label>
+                <div className='max-h-32 overflow-y-auto border border-gray-200 rounded p-2'>
+                  <PageNavigator
+                    numPages={numPages}
+                    currentVisiblePage={currentVisiblePage}
+                    onPageClick={scrollToPage}
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Zoom Controls */}
             <div>
@@ -564,11 +686,11 @@ const ReactPDFViewer: React.FC = () => {
         {/* Features Info */}
         {!pdfFile && (
           <div className='mt-auto pt-6 text-xs text-gray-500'>
-            <p className='mb-2'>✓ Internal link navigation</p>
-            <p className='mb-2'>✓ Bookmark/outline support</p>
-            <p className='mb-2'>✓ Text selection enabled</p>
-            <p className='mb-2'>✓ Responsive design</p>
-            <p>✓ High-quality rendering</p>
+            <p className='mb-2'>✓ Continuous scrolling</p>
+            <p className='mb-2'>✓ All pages visible</p>
+            <p className='mb-2'>✓ Smart page navigation</p>
+            <p className='mb-2'>✓ Internal link support</p>
+            <p>✓ Bookmark navigation</p>
           </div>
         )}
       </aside>
@@ -586,101 +708,69 @@ const ReactPDFViewer: React.FC = () => {
         ref={mainContentRef}
         className={`
           ${isMobile ? 'flex-1' : 'w-[75%]'}
-          bg-gray-200 overflow-y-auto
+          bg-gray-200 overflow-hidden
           ${isMobile ? 'pt-0' : ''}
         `}
       >
-        <div className='flex flex-col items-center w-full min-h-full p-4 md:p-8'>
-          {isLoading && (
-            <div className='flex items-center justify-center h-64'>
-              <div className='text-lg text-gray-600'>Loading PDF...</div>
-            </div>
-          )}
-
-          {!pdfFile && !isLoading && (
-            <div className='flex items-center justify-center h-full w-full text-center text-gray-500'>
-              <div>
-                <h2 className='text-xl font-semibold mb-2'>No PDF Loaded</h2>
-                <p className='text-sm md:text-base'>
-                  Upload a PDF file to begin viewing
-                </p>
-                <p className='text-xs mt-2 text-gray-400'>
-                  Supports internal links, bookmarks, text selection, and
-                  responsive viewing
-                </p>
+        <div ref={scrollContainerRef} className='h-full overflow-y-auto'>
+          <div className='flex flex-col items-center w-full min-h-full p-4 md:p-8'>
+            {isLoading && (
+              <div className='flex items-center justify-center h-64'>
+                <div className='text-lg text-gray-600'>Loading PDF...</div>
               </div>
-            </div>
-          )}
+            )}
 
-          {pdfFile && (
-            <Document
-              file={pdfFile}
-              onLoadSuccess={onDocumentLoadSuccess}
-              onLoadError={onDocumentLoadError}
-              onItemClick={onDocumentItemClick}
-              options={options}
-              loading={
-                <div className='flex items-center justify-center h-64'>
-                  <div className='text-lg text-gray-600'>Loading PDF...</div>
+            {!pdfFile && !isLoading && (
+              <div className='flex items-center justify-center h-full w-full text-center text-gray-500'>
+                <div>
+                  <h2 className='text-xl font-semibold mb-2'>No PDF Loaded</h2>
+                  <p className='text-sm md:text-base'>
+                    Upload a PDF file to begin scrollable viewing
+                  </p>
+                  <p className='text-xs mt-2 text-gray-400'>
+                    All pages will be displayed in a continuous scroll view
+                  </p>
                 </div>
-              }
-              error={
-                <div className='flex items-center justify-center h-64'>
-                  <div className='text-lg text-red-600'>Failed to load PDF</div>
-                </div>
-              }
-              className='react-pdf-document'
-            >
-              {numPages && (
-                <PDFPageComponent
-                  pageNumber={currentPage}
-                  scale={scale}
-                  containerWidth={containerWidth}
-                />
-              )}
-            </Document>
-          )}
+              </div>
+            )}
 
-          {/* Page Navigation Footer */}
-          {numPages && numPages > 1 && (
-            <div className='mt-6 flex items-center justify-center space-x-4 bg-white p-4 rounded-lg shadow-md'>
-              <button
-                onClick={() => goToPage(1)}
-                disabled={currentPage === 1}
-                className='px-3 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm'
+            {pdfFile && (
+              <Document
+                file={pdfFile}
+                onLoadSuccess={onDocumentLoadSuccess}
+                onLoadError={onDocumentLoadError}
+                onItemClick={onDocumentItemClick}
+                options={options}
+                loading={
+                  <div className='flex items-center justify-center h-64'>
+                    <div className='text-lg text-gray-600'>Loading PDF...</div>
+                  </div>
+                }
+                error={
+                  <div className='flex items-center justify-center h-64'>
+                    <div className='text-lg text-red-600'>
+                      Failed to load PDF
+                    </div>
+                  </div>
+                }
+                className='react-pdf-document w-full'
               >
-                First
-              </button>
-              <button
-                onClick={prevPage}
-                disabled={currentPage <= 1}
-                className='px-3 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition disabled:opacity-50 disabled:cursor-not-allowed'
-              >
-                Previous
-              </button>
-              <span className='text-sm font-medium px-4 py-1 bg-blue-100 text-blue-800 rounded'>
-                {currentPage} of {numPages}
-              </span>
-              <button
-                onClick={nextPage}
-                disabled={currentPage >= numPages}
-                className='px-3 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition disabled:opacity-50 disabled:cursor-not-allowed'
-              >
-                Next
-              </button>
-              <button
-                onClick={() => goToPage(numPages)}
-                disabled={currentPage === numPages}
-                className='px-3 py-1 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition disabled:opacity-50 disabled:cursor-not-allowed text-sm'
-              >
-                Last
-              </button>
-            </div>
-          )}
+                {numPages &&
+                  Array.from(new Array(numPages), (_, index) => (
+                    <ScrollablePDFPage
+                      key={`page_${index + 1}`}
+                      pageNumber={index + 1}
+                      scale={scale}
+                      containerWidth={containerWidth}
+                    />
+                  ))}
+              </Document>
+            )}
+          </div>
         </div>
       </main>
     </div>
   );
 };
 
-export default ReactPDFViewer;
+export default ScrollablePDFViewer;

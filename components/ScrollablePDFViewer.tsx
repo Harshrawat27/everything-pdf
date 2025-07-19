@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
+import { useDarkMode } from './PDFViewerHome';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
@@ -38,11 +39,13 @@ const ScrollablePDFPage = ({
   scale,
   containerWidth,
   onLoadSuccess,
+  isDarkMode,
 }: {
   pageNumber: number;
   scale: number;
   containerWidth: number;
   onLoadSuccess?: (page: any) => void;
+  isDarkMode?: boolean;
 }) => {
   const [pageWidth, setPageWidth] = useState<number | null>(null);
 
@@ -66,22 +69,41 @@ const ScrollablePDFPage = ({
     <div
       className='pdf-page-wrapper mb-6 mx-auto max-w-full'
       id={`page-${pageNumber}`}
+      style={{
+        filter: isDarkMode ? 'invert(1) hue-rotate(180deg)' : 'none',
+      }}
     >
       <div className='relative'>
         {/* Page number indicator */}
-        <div className='absolute -top-6 left-0 text-sm text-gray-500 font-medium'>
+        <div className={`absolute -top-6 left-0 text-sm font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-500'}`}>
           Page {pageNumber}
         </div>
 
-        <Page
-          pageNumber={pageNumber}
-          scale={calculateScale()}
-          onLoadSuccess={handlePageLoadSuccess}
-          className='pdf-page shadow-lg border border-gray-200 mx-auto bg-white'
-          canvasBackground='white'
-          renderTextLayer={true}
-          renderAnnotationLayer={true}
-        />
+        <div className='relative'>
+          <Page
+            pageNumber={pageNumber}
+            scale={calculateScale()}
+            onLoadSuccess={handlePageLoadSuccess}
+            className={`pdf-page shadow-lg border mx-auto ${
+              isDarkMode 
+                ? 'border-gray-600 bg-black' 
+                : 'border-gray-200 bg-white'
+            }`}
+            canvasBackground={isDarkMode ? 'black' : 'white'}
+            renderTextLayer={true}
+            renderAnnotationLayer={true}
+          />
+          
+          {/* Add a CSS class for image restoration in dark mode */}
+          {isDarkMode && (
+            <style>{`
+              .pdf-page img,
+              .pdf-page [data-element-type="image"] {
+                filter: invert(1) hue-rotate(180deg) !important;
+              }
+            `}</style>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -204,6 +226,7 @@ const PageNavigator = ({
 
 // Main Scrollable PDF Viewer Component
 const ScrollablePDFViewer: React.FC = () => {
+  const { isDarkMode } = useDarkMode();
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [numPages, setNumPages] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -456,16 +479,20 @@ const ScrollablePDFViewer: React.FC = () => {
   const resetZoom = () => setScale(1.2);
 
   return (
-    <div className='flex flex-col md:flex-row h-screen bg-gray-100 font-sans'>
+    <div className={`flex flex-col md:flex-row h-screen ${isDarkMode ? 'bg-gray-900' : 'bg-gray-100'} font-sans transition-colors duration-200`}>
       {/* Mobile Header */}
       {isMobile && (
-        <header className='bg-white border-b border-gray-200 p-4 flex justify-between items-center md:hidden'>
-          <h1 className='text-xl font-bold text-gray-800'>
+        <header className={`${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-b p-4 flex justify-between items-center md:hidden transition-colors duration-200`}>
+          <h1 className={`text-xl font-bold ${isDarkMode ? 'text-gray-100' : 'text-gray-800'}`}>
             Scrollable PDF Viewer
           </h1>
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
-            className='p-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition'
+            className={`p-2 rounded transition ${
+              isDarkMode 
+                ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' 
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
           >
             ☰
           </button>
@@ -481,13 +508,14 @@ const ScrollablePDFViewer: React.FC = () => {
             : 'w-[25%] max-w-sm relative'
         }
         ${isMobile && !sidebarOpen ? '-translate-x-full' : 'translate-x-0'}
-        bg-white border-r border-gray-200 p-4 md:p-6 flex flex-col shadow-md overflow-y-auto
+        ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} 
+        border-r p-4 md:p-6 flex flex-col shadow-md overflow-y-auto transition-colors duration-200
         ${isMobile ? 'top-16' : ''}
       `}
       >
         {/* Desktop title */}
         {!isMobile && (
-          <h1 className='text-2xl font-bold mb-6 text-gray-800'>
+          <h1 className={`text-2xl font-bold mb-6 ${isDarkMode ? 'text-gray-100' : 'text-gray-800'}`}>
             Scrollable PDF Viewer
           </h1>
         )}
@@ -496,7 +524,11 @@ const ScrollablePDFViewer: React.FC = () => {
         {isMobile && (
           <button
             onClick={() => setSidebarOpen(false)}
-            className='self-end p-2 mb-4 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition md:hidden'
+            className={`self-end p-2 mb-4 rounded transition md:hidden ${
+              isDarkMode 
+                ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' 
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
           >
             ✕
           </button>
@@ -504,15 +536,19 @@ const ScrollablePDFViewer: React.FC = () => {
 
         {/* File Upload */}
         <div
-          className='border-2 border-dashed border-gray-300 rounded-xl p-4 md:p-6 text-center hover:border-blue-500 transition-colors cursor-pointer mb-6 bg-gray-50'
+          className={`border-2 border-dashed rounded-xl p-4 md:p-6 text-center hover:border-blue-500 transition-colors cursor-pointer mb-6 ${
+            isDarkMode 
+              ? 'border-gray-600 bg-gray-700' 
+              : 'border-gray-300 bg-gray-50'
+          }`}
           onDragOver={handleDragOver}
           onDrop={handleDragDrop}
           onClick={() => fileInputRef.current?.click()}
         >
-          <p className='text-base md:text-lg mb-2 font-semibold text-gray-700'>
+          <p className={`text-base md:text-lg mb-2 font-semibold ${isDarkMode ? 'text-gray-200' : 'text-gray-700'}`}>
             Upload PDF
           </p>
-          <p className='text-sm text-gray-500'>Click or Drag & Drop</p>
+          <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>Click or Drag & Drop</p>
           <input
             ref={fileInputRef}
             type='file'
@@ -708,7 +744,7 @@ const ScrollablePDFViewer: React.FC = () => {
         ref={mainContentRef}
         className={`
           ${isMobile ? 'flex-1' : 'w-[75%]'}
-          bg-gray-200 overflow-hidden
+          ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200'} overflow-hidden transition-colors duration-200
           ${isMobile ? 'pt-0' : ''}
         `}
       >
@@ -716,18 +752,18 @@ const ScrollablePDFViewer: React.FC = () => {
           <div className='flex flex-col items-center w-full min-h-full p-4 md:p-8'>
             {isLoading && (
               <div className='flex items-center justify-center h-64'>
-                <div className='text-lg text-gray-600'>Loading PDF...</div>
+                <div className={`text-lg ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Loading PDF...</div>
               </div>
             )}
 
             {!pdfFile && !isLoading && (
-              <div className='flex items-center justify-center h-full w-full text-center text-gray-500'>
+              <div className={`flex items-center justify-center h-full w-full text-center ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                 <div>
-                  <h2 className='text-xl font-semibold mb-2'>No PDF Loaded</h2>
+                  <h2 className={`text-xl font-semibold mb-2 ${isDarkMode ? 'text-gray-200' : 'text-gray-700'}`}>No PDF Loaded</h2>
                   <p className='text-sm md:text-base'>
                     Upload a PDF file to begin scrollable viewing
                   </p>
-                  <p className='text-xs mt-2 text-gray-400'>
+                  <p className={`text-xs mt-2 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                     All pages will be displayed in a continuous scroll view
                   </p>
                 </div>
@@ -762,6 +798,7 @@ const ScrollablePDFViewer: React.FC = () => {
                       pageNumber={index + 1}
                       scale={scale}
                       containerWidth={containerWidth}
+                      isDarkMode={isDarkMode}
                     />
                   ))}
               </Document>

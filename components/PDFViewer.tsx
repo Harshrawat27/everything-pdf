@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
+import { useDarkMode } from './PDFViewerHome';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
@@ -38,11 +39,13 @@ const PDFPageComponent = ({
   scale,
   containerWidth,
   onLoadSuccess,
+  isDarkMode,
 }: {
   pageNumber: number;
   scale: number;
   containerWidth: number;
   onLoadSuccess?: (page: any) => void;
+  isDarkMode?: boolean;
 }) => {
   const [pageWidth, setPageWidth] = useState<number | null>(null);
 
@@ -65,16 +68,37 @@ const PDFPageComponent = ({
   );
 
   return (
-    <div className='pdf-page-wrapper mb-4 md:mb-8 mx-auto max-w-full'>
-      <Page
-        pageNumber={pageNumber}
-        scale={calculateScale()}
-        onLoadSuccess={handlePageLoadSuccess}
-        className='pdf-page shadow-lg border border-gray-200 mx-auto'
-        canvasBackground='white'
-        renderTextLayer={true}
-        renderAnnotationLayer={true}
-      />
+    <div 
+      className='pdf-page-wrapper mb-4 md:mb-8 mx-auto max-w-full'
+      style={{
+        filter: isDarkMode ? 'invert(1) hue-rotate(180deg)' : 'none',
+      }}
+    >
+      <div className='relative'>
+        <Page
+          pageNumber={pageNumber}
+          scale={calculateScale()}
+          onLoadSuccess={handlePageLoadSuccess}
+          className={`pdf-page shadow-lg border mx-auto ${
+            isDarkMode 
+              ? 'border-gray-600 bg-black' 
+              : 'border-gray-200 bg-white'
+          }`}
+          canvasBackground={isDarkMode ? 'black' : 'white'}
+          renderTextLayer={true}
+          renderAnnotationLayer={true}
+        />
+        
+        {/* Restore images from inversion in dark mode */}
+        {isDarkMode && (
+          <style>{`
+            .pdf-page img,
+            .pdf-page [data-element-type="image"] {
+              filter: invert(1) hue-rotate(180deg) !important;
+            }
+          `}</style>
+        )}
+      </div>
     </div>
   );
 };
@@ -129,6 +153,7 @@ const OutlineComponent = ({
 
 // Main PDF Viewer Component
 const ReactPDFViewer: React.FC = () => {
+  const { isDarkMode } = useDarkMode();
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [numPages, setNumPages] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -365,7 +390,7 @@ const ReactPDFViewer: React.FC = () => {
   const prevPage = () => goToPage(currentPage - 1);
 
   return (
-    <div className='flex flex-col md:flex-row h-screen bg-gray-100 font-sans'>
+    <div className={`flex flex-col md:flex-row h-screen ${isDarkMode ? 'bg-gray-900' : 'bg-gray-100'} font-sans transition-colors duration-200`}>
       {/* Mobile Header */}
       {isMobile && (
         <header className='bg-white border-b border-gray-200 p-4 flex justify-between items-center md:hidden'>
@@ -636,6 +661,7 @@ const ReactPDFViewer: React.FC = () => {
                   pageNumber={currentPage}
                   scale={scale}
                   containerWidth={containerWidth}
+                  isDarkMode={isDarkMode}
                 />
               )}
             </Document>

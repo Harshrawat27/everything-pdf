@@ -126,10 +126,13 @@ const OutlineComponent = ({
           <button
             onClick={() => onItemClick(item)}
             className={`
-              w-full text-left p-2 hover:bg-gray-100 rounded text-sm
+              w-full text-left p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-sm transition-colors
               ${item.bold ? 'font-bold' : ''}
               ${item.italic ? 'italic' : ''}
-              ${level === 0 ? 'font-medium text-gray-800' : 'text-gray-600'}
+              ${level === 0 
+                ? 'font-medium text-gray-800 dark:text-gray-200' 
+                : 'text-gray-600 dark:text-gray-400'
+              }
             `}
             style={{
               paddingLeft: `${8 + level * 16}px`,
@@ -583,13 +586,13 @@ const ScrollablePDFViewer: React.FC = () => {
         {/* Tab Navigation */}
         {numPages && (
           <div className='mb-4'>
-            <div className='flex border-b border-gray-200'>
+            <div className={`flex border-b ${isDarkMode ? 'border-gray-600' : 'border-gray-200'}`}>
               <button
                 onClick={() => setActiveTab('navigation')}
                 className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
                   activeTab === 'navigation'
                     ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    : `border-transparent ${isDarkMode ? 'text-gray-400 hover:text-gray-200' : 'text-gray-500 hover:text-gray-700'}`
                 }`}
               >
                 Navigation
@@ -600,7 +603,7 @@ const ScrollablePDFViewer: React.FC = () => {
                   className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
                     activeTab === 'outline'
                       ? 'border-blue-500 text-blue-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                      : `border-transparent ${isDarkMode ? 'text-gray-400 hover:text-gray-200' : 'text-gray-500 hover:text-gray-700'}`
                   }`}
                 >
                   Bookmarks
@@ -615,19 +618,27 @@ const ScrollablePDFViewer: React.FC = () => {
           <div className='space-y-4 mb-6'>
             {/* Quick Navigation */}
             <div>
-              <label className='text-sm font-medium text-gray-600 mb-2 block'>
+              <label className={`text-sm font-medium mb-2 block ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>
                 Quick Navigation
               </label>
               <div className='grid grid-cols-2 gap-2 mb-3'>
                 <button
                   onClick={() => scrollToPage(1)}
-                  className='p-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition text-sm'
+                  className={`p-2 rounded transition text-sm ${
+                    isDarkMode 
+                      ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' 
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  }`}
                 >
                   First Page
                 </button>
                 <button
                   onClick={() => scrollToPage(numPages)}
-                  className='p-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition text-sm'
+                  className={`p-2 rounded transition text-sm ${
+                    isDarkMode 
+                      ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' 
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  }`}
                 >
                   Last Page
                 </button>
@@ -648,7 +659,11 @@ const ScrollablePDFViewer: React.FC = () => {
                     }
                   }
                 }}
-                className='w-full p-2 border border-gray-300 rounded text-center'
+                className={`w-full p-2 border rounded text-center ${
+                  isDarkMode 
+                    ? 'border-gray-600 bg-gray-700 text-gray-200 placeholder-gray-400' 
+                    : 'border-gray-300 bg-white text-gray-900 placeholder-gray-500'
+                }`}
               />
             </div>
 
@@ -705,7 +720,7 @@ const ScrollablePDFViewer: React.FC = () => {
         {/* Outline/Bookmarks Tab */}
         {numPages && activeTab === 'outline' && outline && (
           <div className='flex-1 overflow-y-auto'>
-            <div className='text-sm font-medium text-gray-600 mb-3'>
+            <div className={`text-sm font-medium mb-3 ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>
               Table of Contents
             </div>
             <OutlineComponent outline={outline} onItemClick={handleItemClick} />

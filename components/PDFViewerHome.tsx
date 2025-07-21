@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, createContext, useContext } from 'react';
+import { useState, createContext, useContext, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 
 // Dynamically import the PDF viewers with no SSR
@@ -55,6 +55,20 @@ const PDFViewerHome: React.FC = () => {
   const toggleDarkMode = () => {
     setIsDarkMode(!isDarkMode);
   };
+
+  // Apply dark mode class to document root
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      const root = document.documentElement;
+      if (isDarkMode) {
+        root.classList.add('dark');
+        root.classList.remove('light');
+      } else {
+        root.classList.add('light');
+        root.classList.remove('dark');
+      }
+    }
+  }, [isDarkMode]);
 
   const ModeSelector = () => (
     <div

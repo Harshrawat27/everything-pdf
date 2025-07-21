@@ -120,10 +120,13 @@ const OutlineComponent = ({
           <button
             onClick={() => onItemClick(item)}
             className={`
-              w-full text-left p-2 hover:bg-gray-100 rounded text-sm
+              w-full text-left p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-sm transition-colors
               ${item.bold ? 'font-bold' : ''}
               ${item.italic ? 'italic' : ''}
-              ${level === 0 ? 'font-medium text-gray-800' : 'text-gray-600'}
+              ${level === 0 
+                ? 'font-medium text-gray-800 dark:text-gray-200' 
+                : 'text-gray-600 dark:text-gray-400'
+              }
             `}
             style={{
               paddingLeft: `${8 + level * 16}px`,
@@ -393,11 +396,15 @@ const ReactPDFViewer: React.FC = () => {
     <div className={`flex flex-col md:flex-row h-screen ${isDarkMode ? 'bg-gray-900' : 'bg-gray-100'} font-sans transition-colors duration-200`}>
       {/* Mobile Header */}
       {isMobile && (
-        <header className='bg-white border-b border-gray-200 p-4 flex justify-between items-center md:hidden'>
-          <h1 className='text-xl font-bold text-gray-800'>PDF Viewer</h1>
+        <header className={`${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} border-b p-4 flex justify-between items-center md:hidden transition-colors`}>
+          <h1 className={`text-xl font-bold ${isDarkMode ? 'text-gray-100' : 'text-gray-800'}`}>PDF Viewer</h1>
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
-            className='p-2 bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition'
+            className={`p-2 rounded transition ${
+              isDarkMode 
+                ? 'bg-gray-700 text-gray-200 hover:bg-gray-600' 
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
           >
             ☰
           </button>
